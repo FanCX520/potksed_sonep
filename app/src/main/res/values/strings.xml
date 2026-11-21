@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">PenOS 词典笔桌面</string>
+    <string name="accessibility_guard_description">PenOS 低功耗防锁定守护服务：仅在检测到原厂词典笔桌面强制抢占时自动返回 PenOS，同时智能放行「学王扫学」与您启动的应用。</string>
+    <string name="keep_alive_channel_name">PenOS 后台常驻守护</string>
+    <string name="keep_alive_notification_title">PenOS 桌面低功耗运行中</string>
+    <string name="keep_alive_notification_text">已开启防回收保护，点击返回极简桌面</string>
+</resources>

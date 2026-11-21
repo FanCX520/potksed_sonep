@@ -1,0 +1,6 @@
+{
+  "name": "PenOS 词典笔桌面",
+  "description": "专为 172x640 横屏 Android 5.0 词典笔打造的 Apple StandBy 与 CarPlay 融合桌面，支持模块化小组件、隐藏应用密室、防锁定与学王扫学调用、今日诗词及百词斩风格离线背单词与云同步。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
