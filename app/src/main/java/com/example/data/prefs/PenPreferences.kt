@@ -1,9 +1,11 @@
 package com.example.data.prefs
 
 import android.content.Context
+import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -18,6 +20,8 @@ import kotlinx.coroutines.flow.map
 private val Context.penDataStore: DataStore<Preferences> by preferencesDataStore(name = "penos_prefs")
 
 data class PenConfig(
+    val designStyle: String = STYLE_DARK_STANDBY,
+    val standByStyleMode: String = STANDBY_STYLE_OLED_DARK,
     val hiddenPackages: Set<String> = emptySet(),
     val pinnedDockPackages: List<String> = emptyList(),
     val enabledWidgetIds: List<String> = DEFAULT_WIDGET_ORDER,
@@ -30,17 +34,28 @@ data class PenConfig(
     val standByRightWidget: String = STANDBY_WIDGET_POETRY,
     val standByClockColor: String = CLOCK_COLOR_CORAL,
     val vaultPin: String = "",
-    val keepAliveEnabled: Boolean = true,
+    val keepAliveEnabled: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.O,
     val penFramePreviewEnabled: Boolean = true,
     val activeVocabBook: String = "highschool",
     val jinrishiciToken: String = "",
     val lastPoemFetchAt: Long = 0L,
+    val weatherCityName: String = "北京",
+    val weatherLat: Double = 39.9042,
+    val weatherLon: Double = 116.4074,
+    val lastWeatherFetchAt: Long = 0L,
     val webDavUrl: String = "https://dav.jianguoyun.com/dav/PenOS/",
     val webDavUser: String = "",
     val webDavPass: String = "",
     val lastSyncTime: Long = 0L
 ) {
     companion object {
+        const val STYLE_DARK_STANDBY = "dark_standby"
+        const val STYLE_APPLE_LIGHT = "apple_light"
+
+        const val STANDBY_STYLE_FOLLOW = "follow"
+        const val STANDBY_STYLE_OLED_DARK = "oled_dark"
+        const val STANDBY_STYLE_APPLE_LIGHT = "apple_light"
+
         const val WALLPAPER_AURORA = "aurora"
         const val WALLPAPER_INK = "ink"
         const val WALLPAPER_OBSIDIAN = "obsidian"
@@ -48,6 +63,8 @@ data class PenConfig(
 
         const val STANDBY_WIDGET_POETRY = "poetry"
         const val STANDBY_WIDGET_VOCAB = "vocab"
+        const val STANDBY_WIDGET_WEATHER = "weather"
+        const val STANDBY_WIDGET_TODO = "todo"
 
         const val CLOCK_COLOR_CORAL = "coral"
         const val CLOCK_COLOR_AMBER = "amber"
@@ -56,17 +73,30 @@ data class PenConfig(
 
         val DEFAULT_WIDGET_ORDER = listOf(
             "quick_scan",
+            "weather",
+            "calendar",
+            "todo",
             "jinrishici",
             "vocab_card",
             "pinned_apps",
             "pen_status"
         )
     }
+
+    fun isAppleLightDesktop(): Boolean = designStyle == STYLE_APPLE_LIGHT
+
+    fun isAppleLightStandBy(): Boolean = when (standByStyleMode) {
+        STANDBY_STYLE_APPLE_LIGHT -> true
+        STANDBY_STYLE_OLED_DARK -> false
+        else -> isAppleLightDesktop()
+    }
 }
 
 class PenPreferencesRepository(private val context: Context) {
 
     private object Keys {
+        val DESIGN_STYLE = stringPreferencesKey("design_style")
+        val STANDBY_STYLE_MODE = stringPreferencesKey("standby_style_mode")
         val HIDDEN_PACKAGES = stringSetPreferencesKey("hidden_packages")
         val PINNED_DOCK_CSV = stringPreferencesKey("pinned_dock_csv")
         val ENABLED_WIDGETS_CSV = stringPreferencesKey("enabled_widgets_csv")
@@ -84,6 +114,10 @@ class PenPreferencesRepository(private val context: Context) {
         val ACTIVE_VOCAB_BOOK = stringPreferencesKey("active_vocab_book")
         val JINRISHICI_TOKEN = stringPreferencesKey("jinrishici_token")
         val LAST_POEM_FETCH_AT = longPreferencesKey("last_poem_fetch_at")
+        val WEATHER_CITY_NAME = stringPreferencesKey("weather_city_name")
+        val WEATHER_LAT = doublePreferencesKey("weather_lat")
+        val WEATHER_LON = doublePreferencesKey("weather_lon")
+        val LAST_WEATHER_FETCH_AT = longPreferencesKey("last_weather_fetch_at")
         val WEBDAV_URL = stringPreferencesKey("webdav_url")
         val WEBDAV_USER = stringPreferencesKey("webdav_user")
         val WEBDAV_PASS = stringPreferencesKey("webdav_pass")
@@ -94,6 +128,8 @@ class PenPreferencesRepository(private val context: Context) {
         val pinnedRaw = prefs[Keys.PINNED_DOCK_CSV].orEmpty()
         val widgetsRaw = prefs[Keys.ENABLED_WIDGETS_CSV]
         PenConfig(
+            designStyle = prefs[Keys.DESIGN_STYLE] ?: PenConfig.STYLE_DARK_STANDBY,
+            standByStyleMode = prefs[Keys.STANDBY_STYLE_MODE] ?: PenConfig.STANDBY_STYLE_OLED_DARK,
             hiddenPackages = prefs[Keys.HIDDEN_PACKAGES] ?: emptySet(),
             pinnedDockPackages = if (pinnedRaw.isBlank()) emptyList() else pinnedRaw.split(",").filter { it.isNotBlank() },
             enabledWidgetIds = if (widgetsRaw == null) {
@@ -110,11 +146,15 @@ class PenPreferencesRepository(private val context: Context) {
             standByRightWidget = prefs[Keys.STANDBY_RIGHT_WIDGET] ?: PenConfig.STANDBY_WIDGET_POETRY,
             standByClockColor = prefs[Keys.STANDBY_CLOCK_COLOR] ?: PenConfig.CLOCK_COLOR_CORAL,
             vaultPin = prefs[Keys.VAULT_PIN].orEmpty(),
-            keepAliveEnabled = prefs[Keys.KEEP_ALIVE_ENABLED] ?: true,
+            keepAliveEnabled = prefs[Keys.KEEP_ALIVE_ENABLED] ?: (Build.VERSION.SDK_INT < Build.VERSION_CODES.O),
             penFramePreviewEnabled = prefs[Keys.PEN_FRAME_PREVIEW] ?: true,
             activeVocabBook = prefs[Keys.ACTIVE_VOCAB_BOOK] ?: "highschool",
             jinrishiciToken = prefs[Keys.JINRISHICI_TOKEN].orEmpty(),
             lastPoemFetchAt = prefs[Keys.LAST_POEM_FETCH_AT] ?: 0L,
+            weatherCityName = prefs[Keys.WEATHER_CITY_NAME] ?: "北京",
+            weatherLat = prefs[Keys.WEATHER_LAT] ?: 39.9042,
+            weatherLon = prefs[Keys.WEATHER_LON] ?: 116.4074,
+            lastWeatherFetchAt = prefs[Keys.LAST_WEATHER_FETCH_AT] ?: 0L,
             webDavUrl = prefs[Keys.WEBDAV_URL] ?: "https://dav.jianguoyun.com/dav/PenOS/",
             webDavUser = prefs[Keys.WEBDAV_USER].orEmpty(),
             webDavPass = prefs[Keys.WEBDAV_PASS].orEmpty(),
@@ -124,6 +164,27 @@ class PenPreferencesRepository(private val context: Context) {
 
     suspend fun currentConfig(): PenConfig = configFlow.first()
 
+    suspend fun setDesignStyle(style: String) {
+        context.penDataStore.edit { it[Keys.DESIGN_STYLE] = style }
+    }
+
+    suspend fun setStandByStyleMode(mode: String) {
+        context.penDataStore.edit { it[Keys.STANDBY_STYLE_MODE] = mode }
+    }
+
+    suspend fun setWeatherCity(name: String, lat: Double, lon: Double) {
+        context.penDataStore.edit {
+            it[Keys.WEATHER_CITY_NAME] = name
+            it[Keys.WEATHER_LAT] = lat
+            it[Keys.WEATHER_LON] = lon
+            it[Keys.LAST_WEATHER_FETCH_AT] = 0L
+        }
+    }
+
+    suspend fun saveLastWeatherFetchAt(timestamp: Long) {
+        context.penDataStore.edit { it[Keys.LAST_WEATHER_FETCH_AT] = timestamp }
+    }
+
     suspend fun toggleHiddenPackage(packageName: String) {
         context.penDataStore.edit { prefs ->
             val current = (prefs[Keys.HIDDEN_PACKAGES] ?: emptySet()).toMutableSet()
@@ -131,7 +192,6 @@ class PenPreferencesRepository(private val context: Context) {
                 current.remove(packageName)
             } else {
                 current.add(packageName)
-                // Also remove from pinned dock if hidden
                 val pinned = prefs[Keys.PINNED_DOCK_CSV].orEmpty()
                     .split(",").filter { it.isNotBlank() && it != packageName }
                 prefs[Keys.PINNED_DOCK_CSV] = pinned.joinToString(",")

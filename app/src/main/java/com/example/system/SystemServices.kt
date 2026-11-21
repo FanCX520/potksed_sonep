@@ -148,7 +148,7 @@ class PenKeepAliveService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0, openIntent, piFlags)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_penos)
             .setContentTitle(getString(R.string.keep_alive_notification_title))
             .setContentText(getString(R.string.keep_alive_notification_text))
             .setPriority(NotificationCompat.PRIORITY_MIN)

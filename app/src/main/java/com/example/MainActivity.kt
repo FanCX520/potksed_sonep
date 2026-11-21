@@ -29,12 +29,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +51,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ui.DesktopOverlay
 import com.example.ui.PenOsUiState
 import com.example.ui.PenOsViewModel
 import com.example.ui.PenScreenMode
@@ -74,11 +73,10 @@ class MainActivity : ComponentActivity() {
         configureImmersiveStripBars()
 
         setContent {
-            PenOsTheme {
-                val state by viewModel.uiState.collectAsStateWithLifecycle()
-                val scope = rememberCoroutineScope()
+            val state by viewModel.uiState.collectAsStateWithLifecycle()
+            val scope = rememberCoroutineScope()
 
-                // Adjust window brightness automatically for low-power StandBy mode
+            PenOsTheme(isAppleLight = state.config.isAppleLightDesktop()) {
                 LaunchedEffect(state.mode, state.config.standByBrightness) {
                     applyStandByWindowSettings(
                         isStandBy = state.mode == PenScreenMode.STANDBY,
@@ -86,14 +84,12 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // Haptic feedback when 5-tap arms secret vault or unlocks
                 LaunchedEffect(state.secretTrigger.hapticPulseNonce) {
                     if (state.secretTrigger.hapticPulseNonce > 0) {
                         triggerSubtleHaptic()
                     }
                 }
 
-                // Zero-permission Photo Picker for custom desktop wallpaper
                 val wallpaperPicker = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.PickVisualMedia()
                 ) { uri: Uri? ->
@@ -109,7 +105,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // SAF Export/Import JSON for Vocab Backup
                 val exportJsonLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("application/json")
                 ) { uri: Uri? ->
@@ -136,12 +131,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Proper BackHandler: return to Desktop from sub-modes; absorb Back on Home Desktop
                 BackHandler(enabled = true) {
                     when (state.mode) {
                         PenScreenMode.DESKTOP -> {
-                            if (state.showPoemDetailDialog) {
-                                viewModel.setPoemDetailVisible(false)
+                            if (state.activeOverlay != DesktopOverlay.NONE) {
+                                viewModel.closeOverlay()
                             }
                         }
                         PenScreenMode.STANDBY -> viewModel.wakeFromStandBy()
@@ -164,11 +158,20 @@ class MainActivity : ComponentActivity() {
                                     state = state,
                                     onClockTap = viewModel::onClockTap,
                                     onClockLongPress = viewModel::onClockLongPress,
+                                    onToggleQuickTheme = viewModel::toggleQuickDesignStyle,
                                     onLaunchScanApp = viewModel::launchScanApp,
                                     onLaunchApp = viewModel::launchApp,
                                     onRefreshPoem = { viewModel.refreshPoem(force = true) },
-                                    onOpenPoemDetail = { viewModel.setPoemDetailVisible(true) },
-                                    onClosePoemDetail = { viewModel.setPoemDetailVisible(false) },
+                                    onOpenOverlay = viewModel::openOverlay,
+                                    onCloseOverlay = viewModel::closeOverlay,
+                                    onRefreshWeather = { viewModel.refreshWeather(force = true) },
+                                    onSearchWeatherCities = viewModel::searchWeatherCities,
+                                    onSelectWeatherCity = viewModel::selectWeatherCity,
+                                    onAddTodo = { viewModel.addTodo(it) },
+                                    onAddTodoForDate = { title, iso -> viewModel.addTodo(title, iso) },
+                                    onToggleTodoDone = viewModel::toggleTodoDone,
+                                    onDeleteTodo = viewModel::deleteTodo,
+                                    onClearCompletedTodos = viewModel::clearCompletedTodos,
                                     onOpenVocab = { viewModel.switchMode(PenScreenMode.VOCAB) },
                                     onEnterStandBy = { viewModel.switchMode(PenScreenMode.STANDBY) }
                                 )
@@ -198,6 +201,8 @@ class MainActivity : ComponentActivity() {
                                     onLaunchApp = viewModel::launchApp,
                                     onToggleHiddenApp = viewModel::toggleHiddenApp,
                                     onTogglePinnedApp = viewModel::togglePinnedApp,
+                                    onSelectDesignStyle = viewModel::setDesignStyle,
+                                    onSelectStandByStyleMode = viewModel::setStandByStyleMode,
                                     onToggleWidget = viewModel::toggleWidget,
                                     onMoveWidget = viewModel::moveWidget,
                                     onSelectWallpaperPreset = viewModel::selectWallpaperPreset,
@@ -234,10 +239,11 @@ class MainActivity : ComponentActivity() {
                                 .align(Alignment.TopCenter)
                                 .padding(top = 6.dp)
                         ) {
+                            val colors = PenTheme.colors
                             Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = Color(0xEE141923),
-                                border = BorderStroke(1.dp, PenTheme.colors.standByCoral.copy(alpha = 0.6f)),
+                                shape = RoundedCornerShape(980.dp),
+                                color = if (colors.isAppleLight) Color(0xEE1D1D1F) else Color(0xEE141923),
+                                border = if (colors.isAppleLight) null else BorderStroke(1.dp, colors.primaryAction.copy(alpha = 0.6f)),
                                 modifier = Modifier.clickable { viewModel.clearStatusBanner() }
                             ) {
                                 Text(
@@ -261,7 +267,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Pressing system Home brings back active Desktop cleanly
         viewModel.wakeFromStandBy()
     }
 
@@ -302,22 +307,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Hardware-aware responsive container:
- * - On actual 640x172dp (160ppi) dictionary pen hardware (maxHeight <= 240dp): renders 100% full-screen edge-to-edge!
- * - On taller phone/tablet screens or emulators: renders an authentic centered 640x172dp Pen Display Hardware Frame
- *   with a quick toggle to expand full-screen.
- */
 @Composable
 private fun PenDisplayAdaptiveShell(
     state: PenOsUiState,
     onTogglePreviewFrame: (Boolean) -> Unit,
     content: @Composable () -> Unit
 ) {
+    val isLight = PenTheme.colors.isAppleLight
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF040507))
+            .background(if (isLight) Color(0xFFE8E8ED) else Color(0xFF040507))
             .safeDrawingPadding(),
         contentAlignment = Alignment.Center
     ) {
@@ -329,8 +329,8 @@ private fun PenDisplayAdaptiveShell(
                 content()
             }
         } else {
-            val targetWidth = minOf(maxWidth - 20.dp, 640.dp)
-            val targetHeight = minOf(maxHeight - 48.dp, 178.dp)
+            val targetWidth = minOf((maxWidth - 20.dp).coerceAtLeast(120.dp), 640.dp)
+            val targetHeight = minOf((maxHeight - 48.dp).coerceAtLeast(120.dp), 178.dp)
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -344,36 +344,35 @@ private fun PenDisplayAdaptiveShell(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "PenOS · 640×172 横屏词典笔视窗（点击左侧时间5下后长按进入密室）",
+                        text = "PenOS 2.0 · 640×172 横屏视窗（点时间5下后长按进密室）",
                         style = MaterialTheme.typography.labelSmall,
-                        color = PenTheme.colors.textMuted
+                        color = if (isLight) Color(0xFF6E6E73) else PenTheme.colors.textMuted
                     )
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF161C27),
-                        border = BorderStroke(1.dp, PenTheme.colors.glassBorder),
+                        shape = RoundedCornerShape(980.dp),
+                        color = if (isLight) Color.White else Color(0xFF161C27),
+                        border = if (isLight) null else BorderStroke(1.dp, PenTheme.colors.glassBorder),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(980.dp))
                             .clickable { onTogglePreviewFrame(false) }
                     ) {
                         Text(
                             text = "全屏自适应",
                             style = MaterialTheme.typography.labelSmall,
-                            color = PenTheme.colors.glacierBlue,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            color = PenTheme.colors.linkAccent,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
                     }
                 }
 
-                // Authentic anodized dark hardware pen bezel
                 Surface(
                     modifier = Modifier
                         .width(targetWidth)
                         .height(targetHeight),
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color.Black,
-                    border = BorderStroke(2.dp, Color(0xFF283142)),
-                    shadowElevation = 12.dp
+                    shape = RoundedCornerShape(26.dp),
+                    color = if (isLight) Color.White else Color.Black,
+                    border = BorderStroke(2.dp, if (isLight) Color(0xFFDEDFE2) else Color(0xFF283142)),
+                    shadowElevation = if (isLight) 4.dp else 12.dp
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         content()

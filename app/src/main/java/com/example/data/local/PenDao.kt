@@ -53,3 +53,39 @@ interface PoemDao {
     @Query("SELECT COUNT(*) FROM cached_poems")
     suspend fun getPoemCount(): Int
 }
+
+@Dao
+interface TodoDao {
+    @Query("SELECT * FROM todo_items ORDER BY isDone ASC, priority DESC, createdAt DESC")
+    fun observeAllTodos(): Flow<List<TodoItemEntity>>
+
+    @Query("SELECT COUNT(*) FROM todo_items")
+    suspend fun getTodoCount(): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTodo(todo: TodoItemEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertTodos(todos: List<TodoItemEntity>)
+
+    @Query("UPDATE todo_items SET isDone = :done WHERE id = :id")
+    suspend fun setDone(id: Long, done: Boolean)
+
+    @Query("DELETE FROM todo_items WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM todo_items WHERE isDone = 1")
+    suspend fun clearCompleted()
+}
+
+@Dao
+interface WeatherDao {
+    @Query("SELECT * FROM cached_weather WHERE id = 'current' LIMIT 1")
+    fun observeCurrentWeather(): Flow<CachedWeatherEntity?>
+
+    @Query("SELECT * FROM cached_weather WHERE id = 'current' LIMIT 1")
+    suspend fun getCurrentWeather(): CachedWeatherEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveWeather(weather: CachedWeatherEntity)
+}

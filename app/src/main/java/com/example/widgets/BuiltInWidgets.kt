@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
@@ -54,36 +53,50 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.PenTheme
 
+/**
+ * Shared modular widget container that seamlessly honors BOTH design systems:
+ * - Dark StandBy CarPlay: translucent slate glass card + subtle border + soft accent wash
+ * - Apple White Gallery Vitrine: pure #FFFFFF card, 24dp radius, ZERO border, ZERO shadow
+ */
 @Composable
-private fun GlassWidgetCard(
+internal fun AdaptiveWidgetCard(
     modifier: Modifier = Modifier,
-    accentBrush: Brush? = null,
-    borderColor: Color = PenTheme.colors.glassBorder,
+    darkAccentBrush: Brush? = null,
+    darkBorderColor: Color = PenTheme.colors.glassBorder,
+    useSecondaryLightTint: Boolean = false,
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
+    val penColors = PenTheme.colors
+    val isLight = penColors.isAppleLight
+    val shape = RoundedCornerShape(penColors.cardCornerRadius)
+    val surfaceColor = when {
+        isLight && useSecondaryLightTint -> penColors.secondaryTintCard
+        else -> penColors.glassCard
+    }
+    val border = if (penColors.showCardBorder) BorderStroke(1.dp, darkBorderColor) else null
+
     Surface(
         modifier = modifier
             .fillMaxHeight()
+            .clip(shape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        shape = RoundedCornerShape(18.dp),
-        color = PenTheme.colors.glassCard,
-        border = BorderStroke(1.dp, borderColor)
+        shape = shape,
+        color = surfaceColor,
+        border = border,
+        shadowElevation = 0.dp
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .then(if (accentBrush != null) Modifier.background(accentBrush) else Modifier)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .then(if (!isLight && darkAccentBrush != null) Modifier.background(darkAccentBrush) else Modifier)
+                .padding(horizontal = 13.dp, vertical = 10.dp)
         ) {
             content()
         }
     }
 }
 
-/**
- * Plugin 1: Youdao Dictionary Pen style Quick Scan Hero -> Launches "学王扫学"
- */
 object QuickScanWidgetPlugin : PenWidgetPlugin {
     override val id = "quick_scan"
     override val title = "学王扫学"
@@ -97,21 +110,20 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
         actions: WidgetActionBridge,
         modifier: Modifier
     ) {
-        val coral = PenTheme.colors.standByCoral
+        val colors = PenTheme.colors
+        val isLight = colors.isAppleLight
+        val primary = colors.primaryAction
         val scanPkg = state.config.scanAppPackage
         val boundLabel = remember(scanPkg, state.installedApps) {
             state.installedApps.firstOrNull { it.packageName == scanPkg }?.label
-                ?: if (scanPkg.isBlank()) "点击前往密室绑定" else "学王扫学"
+                ?: if (scanPkg.isBlank()) "密室绑定扫学" else "学王扫学"
         }
 
-        GlassWidgetCard(
+        AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_quick_scan"),
-            borderColor = coral.copy(alpha = 0.45f),
-            accentBrush = Brush.linearGradient(
-                colors = listOf(
-                    coral.copy(alpha = 0.28f),
-                    Color(0x18161C27)
-                )
+            darkBorderColor = primary.copy(alpha = 0.45f),
+            darkAccentBrush = Brush.linearGradient(
+                colors = listOf(primary.copy(alpha = 0.28f), Color(0x18161C27))
             ),
             onClick = actions.onLaunchScanApp
         ) {
@@ -124,47 +136,79 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(coral),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DocumentScanner,
-                            contentDescription = "启动学王扫学",
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = coral.copy(alpha = 0.22f)
-                    ) {
+                    if (isLight) {
+                        // Apple White Gallery: naked Ember eyebrow label + full-pill Apple Blue CTA
                         Text(
-                            text = "SCAN",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = coral,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            text = "快速查词",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.badgeEmber
                         )
+                        Surface(
+                            shape = RoundedCornerShape(980.dp),
+                            color = primary
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DocumentScanner,
+                                    contentDescription = "启动学王扫学",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "扫描",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(primary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DocumentScanner,
+                                contentDescription = "启动学王扫学",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = primary.copy(alpha = 0.22f)
+                        ) {
+                            Text(
+                                text = "SCAN",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = primary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
 
                 Column {
                     Text(
                         text = "学王扫学",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = if (isLight) 17.sp else 15.sp),
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = if (scanPkg.isNotBlank()) "点击提笔扫描 · $boundLabel" else boundLabel,
+                        text = if (isLight) "提笔即扫 · $boundLabel ›" else "点击提笔扫描 · $boundLabel",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (isLight) colors.linkAccent else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -174,9 +218,6 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
     }
 }
 
-/**
- * Plugin 2: Jinrishici (今日诗词 API) Poetry Card with low-power hourly cache
- */
 object JinrishiciWidgetPlugin : PenWidgetPlugin {
     override val id = "jinrishici"
     override val title = "今日诗词"
@@ -190,14 +231,16 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
         actions: WidgetActionBridge,
         modifier: Modifier
     ) {
-        val gold = PenTheme.colors.poetryGold
+        val colors = PenTheme.colors
+        val isLight = colors.isAppleLight
+        val accent = if (isLight) colors.badgeEmber else colors.poetryGold
         val poem = state.poem
 
-        GlassWidgetCard(
+        AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_jinrishici"),
-            borderColor = gold.copy(alpha = 0.30f),
-            accentBrush = Brush.verticalGradient(
-                colors = listOf(gold.copy(alpha = 0.12f), Color.Transparent)
+            darkBorderColor = accent.copy(alpha = 0.30f),
+            darkAccentBrush = Brush.verticalGradient(
+                colors = listOf(accent.copy(alpha = 0.12f), Color.Transparent)
             ),
             onClick = actions.onOpenPoemDetail
         ) {
@@ -214,34 +257,34 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
                         Icon(
                             imageVector = Icons.Rounded.AutoStories,
                             contentDescription = "今日诗词",
-                            tint = gold,
-                            modifier = Modifier.size(15.dp)
+                            tint = accent,
+                            modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = "今日诗词",
                             style = MaterialTheme.typography.labelMedium,
-                            color = gold
+                            color = accent
                         )
                     }
                     IconButton(
                         onClick = actions.onRefreshPoem,
                         modifier = Modifier
-                            .size(30.dp)
+                            .size(28.dp)
                             .testTag("refresh_poem_button")
                     ) {
                         if (state.isPoemLoading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(14.dp),
                                 strokeWidth = 1.5.dp,
-                                color = gold
+                                color = accent
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Rounded.Refresh,
                                 contentDescription = "换一首诗词",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                         }
                     }
@@ -270,9 +313,6 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
     }
 }
 
-/**
- * Plugin 3: Baicizhan-Style Vocabulary Mini Card
- */
 object VocabProgressWidgetPlugin : PenWidgetPlugin {
     override val id = "vocab_card"
     override val title = "百词斩背词"
@@ -286,20 +326,20 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
         actions: WidgetActionBridge,
         modifier: Modifier
     ) {
-        val emerald = PenTheme.colors.vocabEmerald
+        val colors = PenTheme.colors
+        val isLight = colors.isAppleLight
+        val accent = if (isLight) colors.primaryAction else colors.vocabEmerald
         val vocab = state.vocabSession
         val progressFraction = if (vocab.totalInBook > 0) {
             vocab.masteredCount.toFloat() / vocab.totalInBook.toFloat()
-        } else {
-            0f
-        }
+        } else 0f
         val previewWord = vocab.currentWord?.word
 
-        GlassWidgetCard(
+        AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_vocab_card"),
-            borderColor = emerald.copy(alpha = 0.35f),
-            accentBrush = Brush.linearGradient(
-                colors = listOf(emerald.copy(alpha = 0.16f), Color.Transparent)
+            darkBorderColor = accent.copy(alpha = 0.35f),
+            darkAccentBrush = Brush.linearGradient(
+                colors = listOf(accent.copy(alpha = 0.16f), Color.Transparent)
             ),
             onClick = actions.onOpenVocabStudy
         ) {
@@ -316,14 +356,14 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
                         Icon(
                             imageVector = Icons.Rounded.School,
                             contentDescription = "背单词",
-                            tint = emerald,
-                            modifier = Modifier.size(16.dp)
+                            tint = accent,
+                            modifier = Modifier.size(15.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = "斩词记忆",
                             style = MaterialTheme.typography.labelMedium,
-                            color = emerald
+                            color = accent
                         )
                     }
                     Text(
@@ -342,7 +382,7 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = previewWord?.phonetic ?: "点击开启刷词",
+                        text = previewWord?.phonetic ?: "开始刷词 ›",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
@@ -354,18 +394,15 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(5.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = emerald,
-                    trackColor = Color.White.copy(alpha = 0.12f)
+                        .clip(RoundedCornerShape(980.dp)),
+                    color = accent,
+                    trackColor = if (isLight) colors.chipSurface else Color.White.copy(alpha = 0.12f)
                 )
             }
         }
     }
 }
 
-/**
- * Plugin 4: CarPlay-Style Curated Pinned Apps Widget (Only selected apps, never full drawer!)
- */
 object PinnedAppsWidgetPlugin : PenWidgetPlugin {
     override val id = "pinned_apps"
     override val title = "精选应用栏"
@@ -379,7 +416,8 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
         actions: WidgetActionBridge,
         modifier: Modifier
     ) {
-        val glacier = PenTheme.colors.glacierBlue
+        val colors = PenTheme.colors
+        val accent = colors.linkAccent
         val visiblePinned = remember(state.config.pinnedDockPackages, state.config.hiddenPackages, state.installedApps) {
             state.config.pinnedDockPackages
                 .filter { !state.config.hiddenPackages.contains(it) }
@@ -387,9 +425,9 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                 .take(4)
         }
 
-        GlassWidgetCard(
+        AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_pinned_apps"),
-            borderColor = glacier.copy(alpha = 0.28f)
+            darkBorderColor = accent.copy(alpha = 0.28f)
         ) {
             Column(
                 modifier = Modifier.fillMaxSize(),
@@ -404,20 +442,20 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                         Icon(
                             imageVector = Icons.Rounded.Apps,
                             contentDescription = "精选应用",
-                            tint = glacier,
+                            tint = if (colors.isAppleLight) MaterialTheme.colorScheme.onSurface else accent,
                             modifier = Modifier.size(15.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = "常用应用",
                             style = MaterialTheme.typography.labelMedium,
-                            color = glacier
+                            color = if (colors.isAppleLight) MaterialTheme.colorScheme.onSurface else accent
                         )
                     }
                     Text(
                         text = "${visiblePinned.size} 个",
                         style = MaterialTheme.typography.labelSmall,
-                        color = PenTheme.colors.textMuted
+                        color = colors.textMuted
                     )
                 }
 
@@ -461,13 +499,13 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                                         modifier = Modifier
                                             .size(34.dp)
                                             .clip(RoundedCornerShape(9.dp))
-                                            .background(glacier.copy(alpha = 0.25f)),
+                                            .background(colors.chipSurface),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
                                             text = appInfo.label.take(1),
                                             style = MaterialTheme.typography.titleSmall,
-                                            color = Color.White
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                 }
@@ -488,9 +526,6 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
     }
 }
 
-/**
- * Plugin 5: Hardware Telemetry & Quick StandBy Trigger (1GB RAM / Battery / Wi-Fi)
- */
 object PenStatusWidgetPlugin : PenWidgetPlugin {
     override val id = "pen_status"
     override val title = "笔端状态"
@@ -504,11 +539,11 @@ object PenStatusWidgetPlugin : PenWidgetPlugin {
         actions: WidgetActionBridge,
         modifier: Modifier
     ) {
+        val colors = PenTheme.colors
+        val isLight = colors.isAppleLight
         val clock = state.clock
-        val glacier = PenTheme.colors.glacierBlue
-        val amber = PenTheme.colors.standByAmber
 
-        GlassWidgetCard(
+        AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_pen_status"),
             onClick = actions.onEnterStandBy
         ) {
@@ -525,7 +560,9 @@ object PenStatusWidgetPlugin : PenWidgetPlugin {
                         Icon(
                             imageVector = if (clock.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.BatteryStd,
                             contentDescription = "电量",
-                            tint = if (clock.batteryPercent > 20) PenTheme.colors.vocabEmerald else PenTheme.colors.dangerRose,
+                            tint = if (isLight) MaterialTheme.colorScheme.onSurface else {
+                                if (clock.batteryPercent > 20) colors.vocabEmerald else colors.dangerRose
+                            },
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(3.dp))
@@ -538,7 +575,7 @@ object PenStatusWidgetPlugin : PenWidgetPlugin {
                     Icon(
                         imageVector = if (clock.isWifiConnected) Icons.Rounded.Wifi else Icons.Rounded.WifiOff,
                         contentDescription = "无线网络",
-                        tint = if (clock.isWifiConnected) glacier else PenTheme.colors.textMuted,
+                        tint = if (clock.isWifiConnected) colors.linkAccent else colors.textMuted,
                         modifier = Modifier.size(15.dp)
                     )
                 }
@@ -547,7 +584,7 @@ object PenStatusWidgetPlugin : PenWidgetPlugin {
                     Icon(
                         imageVector = Icons.Rounded.Memory,
                         contentDescription = "可用内存",
-                        tint = PenTheme.colors.textMuted,
+                        tint = colors.textMuted,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
@@ -558,29 +595,37 @@ object PenStatusWidgetPlugin : PenWidgetPlugin {
                     )
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = amber.copy(alpha = 0.20f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                if (isLight) {
+                    Text(
+                        text = "进入息屏待机 ›",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.linkAccent
+                    )
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = colors.standByAmber.copy(alpha = 0.20f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Bedtime,
-                            contentDescription = "进入 StandBy 息屏待机",
-                            tint = amber,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "息屏待机",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = amber,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bedtime,
+                                contentDescription = "进入 StandBy 息屏待机",
+                                tint = colors.standByAmber,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "息屏待机",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.standByAmber,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

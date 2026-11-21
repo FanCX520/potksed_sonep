@@ -92,16 +92,17 @@ fun VocabStudyScreen(
         }
     }
 
+    val colors = PenTheme.colors
     val vocab = state.vocabSession
     val currentWord = vocab.currentWord?.word
-    val emerald = PenTheme.colors.vocabEmerald
-    val glacier = PenTheme.colors.glacierBlue
-    val coral = PenTheme.colors.standByCoral
+    val emerald = if (colors.isAppleLight) colors.primaryAction else colors.vocabEmerald
+    val glacier = colors.linkAccent
+    val coral = colors.primaryAction
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(PenTheme.colors.obsidian)
+            .background(colors.canvasBackground)
             .padding(horizontal = 8.dp, vertical = 7.dp)
     ) {
         Row(
@@ -113,9 +114,9 @@ fun VocabStudyScreen(
                 modifier = Modifier
                     .weight(0.44f)
                     .fillMaxHeight(),
-                shape = RoundedCornerShape(16.dp),
-                color = PenTheme.colors.glassCardElevated,
-                border = BorderStroke(1.dp, PenTheme.colors.glassBorder)
+                shape = RoundedCornerShape(colors.cardCornerRadius),
+                color = colors.glassCardElevated,
+                border = if (colors.showCardBorder) BorderStroke(1.dp, colors.glassBorder) else null
             ) {
                 Column(
                     modifier = Modifier
@@ -390,32 +391,34 @@ private fun VocabOptionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = PenTheme.colors
     val revealed = selectedId != null
     val isSelected = selectedId == option.wordId
-    val emerald = PenTheme.colors.vocabEmerald
-    val rose = PenTheme.colors.dangerRose
-    val cueColor = Color(option.accentHex)
+    val emerald = if (colors.isAppleLight) colors.primaryAction else colors.vocabEmerald
+    val rose = colors.dangerRose
+    val cueColor = if (colors.isAppleLight) colors.badgeEmber else Color(option.accentHex)
 
     val bgColor = when {
-        revealed && option.isCorrect -> emerald.copy(alpha = 0.28f)
-        revealed && isSelected && !option.isCorrect -> rose.copy(alpha = 0.28f)
-        else -> PenTheme.colors.glassCard
+        revealed && option.isCorrect -> emerald.copy(alpha = 0.20f)
+        revealed && isSelected && !option.isCorrect -> rose.copy(alpha = 0.20f)
+        else -> colors.glassCard
     }
-    val borderColor = when {
-        revealed && option.isCorrect -> emerald
-        revealed && isSelected && !option.isCorrect -> rose
-        else -> PenTheme.colors.glassBorder
+    val border = when {
+        revealed && option.isCorrect -> BorderStroke(1.5.dp, emerald)
+        revealed && isSelected && !option.isCorrect -> BorderStroke(1.5.dp, rose)
+        colors.showCardBorder -> BorderStroke(1.dp, colors.glassBorder)
+        else -> null
     }
 
     Surface(
         modifier = modifier
             .fillMaxHeight()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(colors.cardCornerRadius))
             .clickable(enabled = !revealed, onClick = onClick)
             .testTag("vocab_option_${option.wordId}"),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(colors.cardCornerRadius),
         color = bgColor,
-        border = BorderStroke(1.dp, borderColor)
+        border = border
     ) {
         Column(
             modifier = Modifier

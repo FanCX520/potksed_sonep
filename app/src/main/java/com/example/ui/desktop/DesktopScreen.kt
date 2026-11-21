@@ -25,19 +25,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.BatteryStd
 import androidx.compose.material.icons.rounded.Bedtime
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -56,7 +53,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.local.TodoItemEntity
 import com.example.data.prefs.PenConfig
+import com.example.data.remote.WeatherCityOption
+import com.example.ui.DesktopOverlay
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.PenTheme
 import com.example.widgets.WidgetActionBridge
@@ -67,11 +67,20 @@ fun DesktopScreen(
     state: PenOsUiState,
     onClockTap: () -> Unit,
     onClockLongPress: () -> Unit,
+    onToggleQuickTheme: () -> Unit,
     onLaunchScanApp: () -> Unit,
     onLaunchApp: (String) -> Unit,
     onRefreshPoem: () -> Unit,
-    onOpenPoemDetail: () -> Unit,
-    onClosePoemDetail: () -> Unit,
+    onOpenOverlay: (DesktopOverlay) -> Unit,
+    onCloseOverlay: () -> Unit,
+    onRefreshWeather: () -> Unit,
+    onSearchWeatherCities: (String) -> Unit,
+    onSelectWeatherCity: (WeatherCityOption) -> Unit,
+    onAddTodo: (String) -> Unit,
+    onAddTodoForDate: (String, String) -> Unit,
+    onToggleTodoDone: (TodoItemEntity) -> Unit,
+    onDeleteTodo: (Long) -> Unit,
+    onClearCompletedTodos: () -> Unit,
     onOpenVocab: () -> Unit,
     onEnterStandBy: () -> Unit,
     modifier: Modifier = Modifier
@@ -84,28 +93,36 @@ fun DesktopScreen(
         onLaunchScanApp,
         onLaunchApp,
         onRefreshPoem,
-        onOpenPoemDetail,
+        onOpenOverlay,
         onOpenVocab,
-        onEnterStandBy
+        onEnterStandBy,
+        onRefreshWeather,
+        onToggleTodoDone
     ) {
         WidgetActionBridge(
             onLaunchScanApp = onLaunchScanApp,
             onLaunchApp = onLaunchApp,
             onRefreshPoem = onRefreshPoem,
-            onOpenPoemDetail = onOpenPoemDetail,
+            onOpenPoemDetail = { onOpenOverlay(DesktopOverlay.POEM) },
             onOpenVocabStudy = onOpenVocab,
-            onEnterStandBy = onEnterStandBy
+            onEnterStandBy = onEnterStandBy,
+            onOpenWeather = { onOpenOverlay(DesktopOverlay.WEATHER) },
+            onRefreshWeather = onRefreshWeather,
+            onOpenCalendar = { onOpenOverlay(DesktopOverlay.CALENDAR) },
+            onOpenTodo = { onOpenOverlay(DesktopOverlay.TODO) },
+            onToggleTodoDone = onToggleTodoDone
         )
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 1. Custom Wallpaper Layer (low-overhead, no real-time blur for MT6580 GPU)
+        // 1. Wallpaper / Apple White Gallery Vitrine Canvas
         WallpaperBackdrop(
+            isAppleLight = PenTheme.colors.isAppleLight,
             presetId = state.config.wallpaperPresetId,
             customUri = state.config.customWallpaperUri
         )
 
-        // 2. Main CarPlay + Youdao Split Layout (Left Dock 68dp + Right Horizontal Widget Canvas)
+        // 2. Main Split Layout: Left CarPlay Dock + Right Modular Widget Deck
         Row(
             modifier = Modifier
                 .fillMaxSize()
@@ -116,6 +133,7 @@ fun DesktopScreen(
                 state = state,
                 onClockTap = onClockTap,
                 onClockLongPress = onClockLongPress,
+                onToggleQuickTheme = onToggleQuickTheme,
                 onOpenVocab = onOpenVocab,
                 onEnterStandBy = onEnterStandBy
             )
@@ -138,26 +156,75 @@ fun DesktopScreen(
             }
         }
 
-        // 3. Full Poem Reader Overlay
+        // 3. Interactive Strip Overlays (Poem, Weather, Calendar, Todo)
         AnimatedVisibility(
-            visible = state.showPoemDetailDialog,
+            visible = state.activeOverlay != DesktopOverlay.NONE,
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            PoemDetailOverlay(
-                state = state,
-                onRefresh = onRefreshPoem,
-                onDismiss = onClosePoemDetail
-            )
+            when (state.activeOverlay) {
+                DesktopOverlay.POEM -> PoemDetailOverlay(
+                    state = state,
+                    onRefresh = onRefreshPoem,
+                    onDismiss = onCloseOverlay
+                )
+                DesktopOverlay.WEATHER -> WeatherDetailOverlay(
+                    state = state,
+                    onSearchCity = onSearchWeatherCities,
+                    onSelectCity = onSelectWeatherCity,
+                    onRefreshWeather = onRefreshWeather,
+                    onDismiss = onCloseOverlay
+                )
+                DesktopOverlay.CALENDAR -> CalendarDetailOverlay(
+                    state = state,
+                    onToggleTodoDone = onToggleTodoDone,
+                    onAddTodoForDate = onAddTodoForDate,
+                    onDismiss = onCloseOverlay
+                )
+                DesktopOverlay.TODO -> TodoManagerOverlay(
+                    state = state,
+                    onAddTodo = onAddTodo,
+                    onToggleTodoDone = onToggleTodoDone,
+                    onDeleteTodo = onDeleteTodo,
+                    onClearCompleted = onClearCompletedTodos,
+                    onDismiss = onCloseOverlay
+                )
+                DesktopOverlay.NONE -> Unit
+            }
         }
     }
 }
 
 @Composable
 private fun WallpaperBackdrop(
+    isAppleLight: Boolean,
     presetId: String,
     customUri: String
 ) {
+    if (isAppleLight) {
+        // Apple White Gallery Vitrine: vast Fog Mist #F3F6F6 gallery canvas so Pure White #FFFFFF cards float effortlessly
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(PenTheme.colors.canvasBackground)
+        ) {
+            if (presetId == PenConfig.WALLPAPER_CUSTOM && customUri.isNotBlank()) {
+                AsyncImage(
+                    model = Uri.parse(customUri),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xCCF3F6F6))
+                )
+            }
+        }
+        return
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -191,7 +258,6 @@ private fun WallpaperBackdrop(
                 }
             }
             else -> {
-                // Pure low-power obsidian gradient
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -204,17 +270,12 @@ private fun WallpaperBackdrop(
             }
         }
 
-        // Crisp readability scrim over wallpaper
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.horizontalGradient(
-                        colors = listOf(
-                            Color(0x9905070B),
-                            Color(0x55080B12),
-                            Color(0x7705070B)
-                        )
+                        colors = listOf(Color(0x9905070B), Color(0x55080B12), Color(0x7705070B))
                     )
                 )
         )
@@ -227,34 +288,36 @@ private fun CarPlayLeftDock(
     state: PenOsUiState,
     onClockTap: () -> Unit,
     onClockLongPress: () -> Unit,
+    onToggleQuickTheme: () -> Unit,
     onOpenVocab: () -> Unit,
     onEnterStandBy: () -> Unit
 ) {
-    val coral = PenTheme.colors.standByCoral
-    val emerald = PenTheme.colors.vocabEmerald
-    val amber = PenTheme.colors.standByAmber
+    val colors = PenTheme.colors
+    val isLight = colors.isAppleLight
     val isArmed = state.secretTrigger.isArmed
+    val dockShape = RoundedCornerShape(colors.cardCornerRadius)
 
     Surface(
         modifier = Modifier
             .width(68.dp)
             .fillMaxHeight()
             .testTag("carplay_left_dock"),
-        shape = RoundedCornerShape(18.dp),
-        color = PenTheme.colors.glassCardElevated,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (isArmed) coral.copy(alpha = 0.85f) else PenTheme.colors.glassBorder
-        )
+        shape = dockShape,
+        color = colors.glassCardElevated,
+        border = when {
+            isArmed -> BorderStroke(1.5.dp, colors.primaryAction)
+            colors.showCardBorder -> BorderStroke(1.dp, colors.glassBorder)
+            else -> null
+        }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(vertical = 8.dp, horizontal = 5.dp),
+                .padding(vertical = 6.dp, horizontal = 5.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Clock Trigger: Tap 5 times + Long-press to enter Hidden Vault!
+            // Top Secret Clock Trigger: 5 taps + Long-press -> Hidden Vault
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
@@ -264,16 +327,16 @@ private fun CarPlayLeftDock(
                         onClick = onClockTap,
                         onLongClick = onClockLongPress
                     )
-                    .padding(vertical = 4.dp)
+                    .padding(vertical = 3.dp)
                     .testTag("desktop_clock_trigger")
             ) {
                 Text(
                     text = state.clock.timeHHmm,
                     style = MaterialTheme.typography.titleMedium.copy(
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold
+                        fontSize = 16.sp,
+                        fontWeight = if (isLight) FontWeight.SemiBold else FontWeight.Bold
                     ),
-                    color = if (isArmed) coral else MaterialTheme.colorScheme.onSurface
+                    color = if (isArmed) colors.primaryAction else MaterialTheme.colorScheme.onSurface
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -282,8 +345,10 @@ private fun CarPlayLeftDock(
                     Icon(
                         imageVector = if (state.clock.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.BatteryStd,
                         contentDescription = "电量",
-                        tint = if (state.clock.batteryPercent > 20) emerald else PenTheme.colors.dangerRose,
-                        modifier = Modifier.size(11.dp)
+                        tint = if (isLight) MaterialTheme.colorScheme.onSurfaceVariant else {
+                            if (state.clock.batteryPercent > 20) colors.vocabEmerald else colors.dangerRose
+                        },
+                        modifier = Modifier.size(10.dp)
                     )
                     Text(
                         text = "${state.clock.batteryPercent}%",
@@ -297,125 +362,73 @@ private fun CarPlayLeftDock(
                         modifier = Modifier
                             .size(5.dp)
                             .clip(CircleShape)
-                            .background(coral)
+                            .background(colors.primaryAction)
                     )
                 }
             }
 
-            // Quick Action Pill Buttons (Vocab + StandBy)
+            // Compact Pill Actions: Vocab + StandBy + Quick Theme Switch
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Surface(
                     modifier = Modifier
-                        .size(width = 50.dp, height = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(width = 50.dp, height = 28.dp)
+                        .clip(RoundedCornerShape(980.dp))
                         .clickable(onClick = onOpenVocab)
                         .testTag("dock_vocab_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    color = emerald.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, emerald.copy(alpha = 0.35f))
+                    shape = RoundedCornerShape(980.dp),
+                    color = if (isLight) colors.chipSurface else colors.vocabEmerald.copy(alpha = 0.18f),
+                    border = if (isLight) null else BorderStroke(1.dp, colors.vocabEmerald.copy(alpha = 0.35f))
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Rounded.School,
                             contentDescription = "背单词",
-                            tint = emerald,
-                            modifier = Modifier.size(20.dp)
+                            tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.vocabEmerald,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
 
-                Surface(
-                    modifier = Modifier
-                        .size(width = 50.dp, height = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(onClick = onEnterStandBy)
-                        .testTag("dock_standby_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    color = amber.copy(alpha = 0.16f),
-                    border = BorderStroke(1.dp, amber.copy(alpha = 0.35f))
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Bedtime,
-                            contentDescription = "进入 StandBy 息屏待机",
-                            tint = amber,
-                            modifier = Modifier.size(19.dp)
-                        )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onEnterStandBy)
+                            .testTag("dock_standby_button"),
+                        shape = CircleShape,
+                        color = if (isLight) colors.chipSurface else colors.standByAmber.copy(alpha = 0.18f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bedtime,
+                                contentDescription = "进入 StandBy 息屏待机",
+                                tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.standByAmber,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
                     }
-                }
-            }
-        }
-    }
-}
 
-@Composable
-private fun PoemDetailOverlay(
-    state: PenOsUiState,
-    onRefresh: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val poem = state.poem
-    val gold = PenTheme.colors.poetryGold
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xD905070B))
-            .clickable(onClick = onDismiss)
-            .padding(10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.86f)
-                .fillMaxHeight()
-                .clickable(enabled = false) {},
-            shape = RoundedCornerShape(18.dp),
-            color = PenTheme.colors.glassCardElevated,
-            border = BorderStroke(1.dp, gold.copy(alpha = 0.45f))
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = "《${poem.title}》 · ${poem.dynasty} ${poem.author}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = gold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = poem.fullContent,
-                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(onClick = onRefresh) {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = "刷新诗词",
-                            tint = gold
-                        )
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "关闭诗词详情",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    Surface(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onToggleQuickTheme)
+                            .testTag("dock_theme_toggle_button"),
+                        shape = CircleShape,
+                        color = if (isLight) colors.chipSurface else colors.glacierBlue.copy(alpha = 0.18f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isLight) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
+                                contentDescription = "一键切换设计方案",
+                                tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.glacierBlue,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
                     }
                 }
             }

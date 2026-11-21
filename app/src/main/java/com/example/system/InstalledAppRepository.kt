@@ -123,14 +123,15 @@ class InstalledAppRepository(private val context: Context) {
         }
 
     private fun drawableToCompactBitmap(drawable: Drawable?, sizePx: Int): Bitmap? {
-        if (drawable == null) return null
-        if (drawable is BitmapDrawable && drawable.bitmap != null) {
-            return Bitmap.createScaledBitmap(drawable.bitmap, sizePx, sizePx, true)
+        if (drawable == null || sizePx <= 0) return null
+        return try {
+            val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmap
+        } catch (_: Exception) {
+            null
         }
-        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, canvas.width, canvas.height)
-        drawable.draw(canvas)
-        return bitmap
     }
 }
