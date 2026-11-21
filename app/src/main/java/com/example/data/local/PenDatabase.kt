@@ -13,15 +13,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         VocabProgressEntity::class,
         CachedPoemEntity::class,
         TodoItemEntity::class,
+        CalendarEventEntity::class,
         CachedWeatherEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class PenDatabase : RoomDatabase() {
     abstract fun vocabDao(): VocabDao
     abstract fun poemDao(): PoemDao
     abstract fun todoDao(): TodoDao
+    abstract fun calendarEventDao(): CalendarEventDao
     abstract fun weatherDao(): WeatherDao
 
     companion object {
@@ -64,6 +66,24 @@ abstract class PenDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `calendar_events` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `dateIso` TEXT NOT NULL,
+                        `timeHHmm` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE `vocab_words` ADD COLUMN `rootBreakdown` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `vocab_words` ADD COLUMN `visualCue` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): PenDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -71,7 +91,7 @@ abstract class PenDatabase : RoomDatabase() {
                     PenDatabase::class.java,
                     "penos_launcher.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

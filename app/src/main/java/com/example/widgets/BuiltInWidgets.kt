@@ -1,5 +1,6 @@
 package com.example.widgets
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -44,22 +45,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.system.InstalledAppInfo
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.PenTheme
+import com.example.ui.theme.springPressScale
+import java.io.File
 
 /**
- * Shared modular widget container that seamlessly honors BOTH design systems:
- * - Dark StandBy CarPlay: translucent slate glass card + subtle border + soft accent wash
- * - Apple White Gallery Vitrine: pure #FFFFFF card, 24dp radius, ZERO border, ZERO shadow
+ * Shared modular widget container honoring both themes + Apple spring press scale.
  */
 @Composable
-internal fun AdaptiveWidgetCard(
+fun AdaptiveWidgetCard(
     modifier: Modifier = Modifier,
     darkAccentBrush: Brush? = null,
     darkBorderColor: Color = PenTheme.colors.glassBorder,
@@ -79,8 +82,8 @@ internal fun AdaptiveWidgetCard(
     Surface(
         modifier = modifier
             .fillMaxHeight()
-            .clip(shape)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(if (onClick != null) Modifier.springPressScale(pressedScale = 0.965f, onClick = onClick) else Modifier)
+            .clip(shape),
         shape = shape,
         color = surfaceColor,
         border = border,
@@ -97,10 +100,91 @@ internal fun AdaptiveWidgetCard(
     }
 }
 
+/**
+ * Renders an app icon honoring user custom icon specs (file path or "color:#RRGGBB" badge).
+ */
+@Composable
+fun PenAppIconImage(
+    appInfo: InstalledAppInfo,
+    customIconSpec: String?,
+    sizeDp: Dp = 34.dp,
+    cornerDp: Dp = 9.dp
+) {
+    val colors = PenTheme.colors
+    val customBitmap = remember(customIconSpec) {
+        if (!customIconSpec.isNullOrBlank() && !customIconSpec.startsWith("color:")) {
+            val f = File(customIconSpec)
+            if (f.exists()) {
+                runCatching { BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() }.getOrNull()
+            } else null
+        } else null
+    }
+    val customColor = remember(customIconSpec) {
+        if (customIconSpec?.startsWith("color:") == true) {
+            runCatching {
+                Color(android.graphics.Color.parseColor(customIconSpec.removePrefix("color:")))
+            }.getOrNull()
+        } else null
+    }
+
+    when {
+        customBitmap != null -> {
+            Image(
+                bitmap = customBitmap,
+                contentDescription = appInfo.label,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(sizeDp)
+                    .clip(RoundedCornerShape(cornerDp))
+            )
+        }
+        customColor != null -> {
+            Box(
+                modifier = Modifier
+                    .size(sizeDp)
+                    .clip(RoundedCornerShape(cornerDp))
+                    .background(customColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = appInfo.label.take(1),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        appInfo.iconBitmap != null -> {
+            Image(
+                bitmap = appInfo.iconBitmap.asImageBitmap(),
+                contentDescription = appInfo.label,
+                modifier = Modifier
+                    .size(sizeDp)
+                    .clip(RoundedCornerShape(cornerDp))
+            )
+        }
+        else -> {
+            Box(
+                modifier = Modifier
+                    .size(sizeDp)
+                    .clip(RoundedCornerShape(cornerDp))
+                    .background(colors.chipSurface),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = appInfo.label.take(1),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
+
 object QuickScanWidgetPlugin : PenWidgetPlugin {
     override val id = "quick_scan"
     override val title = "学王扫学"
-    override val subtitle = "有道词典笔风格一键扫描查词"
+    override val subtitle = "久学网组件级隔离一键扫描查词"
     override val preferredWidth: Dp = 186.dp
     override val lowPowerNote = "零后台常驻"
 
@@ -114,9 +198,11 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
         val isLight = colors.isAppleLight
         val primary = colors.primaryAction
         val scanPkg = state.config.scanAppPackage
-        val boundLabel = remember(scanPkg, state.installedApps) {
-            state.installedApps.firstOrNull { it.packageName == scanPkg }?.label
+        val scanAct = state.config.scanActivityClass
+        val boundLabel = remember(scanPkg, scanAct, state.installedApps) {
+            val base = state.installedApps.firstOrNull { it.packageName == scanPkg }?.label
                 ?: if (scanPkg.isBlank()) "密室绑定扫学" else "学王扫学"
+            if (scanAct.isNotBlank()) "$base·隔离" else base
         }
 
         AdaptiveWidgetCard(
@@ -137,16 +223,12 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (isLight) {
-                        // Apple White Gallery: naked Ember eyebrow label + full-pill Apple Blue CTA
                         Text(
                             text = "快速查词",
                             style = MaterialTheme.typography.labelMedium,
                             color = colors.badgeEmber
                         )
-                        Surface(
-                            shape = RoundedCornerShape(980.dp),
-                            color = primary
-                        ) {
+                        Surface(shape = RoundedCornerShape(980.dp), color = primary) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -221,9 +303,9 @@ object QuickScanWidgetPlugin : PenWidgetPlugin {
 object JinrishiciWidgetPlugin : PenWidgetPlugin {
     override val id = "jinrishici"
     override val title = "今日诗词"
-    override val subtitle = "联网名句推荐 + 本地离线古诗缓存"
-    override val preferredWidth: Dp = 224.dp
-    override val lowPowerNote = "每小时低频刷新"
+    override val subtitle = "思源宋体排印 · 联网名句 + 离线缓存"
+    override val preferredWidth: Dp = 230.dp
+    override val lowPowerNote = "思源宋体"
 
     @Composable
     override fun Render(
@@ -235,6 +317,7 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
         val isLight = colors.isAppleLight
         val accent = if (isLight) colors.badgeEmber else colors.poetryGold
         val poem = state.poem
+        val poetryFont = PenTheme.poetryFont
 
         AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_jinrishici"),
@@ -262,7 +345,7 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "今日诗词",
+                            text = "今日诗词 · 思源宋体",
                             style = MaterialTheme.typography.labelMedium,
                             color = accent
                         )
@@ -293,8 +376,10 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
                 Text(
                     text = poem.content,
                     style = MaterialTheme.typography.titleSmall.copy(
-                        fontSize = 14.sp,
-                        lineHeight = 19.sp
+                        fontFamily = poetryFont,
+                        fontSize = 15.sp,
+                        lineHeight = 21.sp,
+                        fontWeight = FontWeight.Medium
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
@@ -303,7 +388,7 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
 
                 Text(
                     text = "〔${poem.dynasty}〕${poem.author} · 《${poem.title}》",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = poetryFont),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -315,10 +400,10 @@ object JinrishiciWidgetPlugin : PenWidgetPlugin {
 
 object VocabProgressWidgetPlugin : PenWidgetPlugin {
     override val id = "vocab_card"
-    override val title = "百词斩背词"
-    override val subtitle = "离线词库 + WebDAV 云同步"
-    override val preferredWidth: Dp = 198.dp
-    override val lowPowerNote = "本地 Room 驱动"
+    override val title = "百词斩 2.0"
+    override val subtitle = "200+ 分级词库 · 词根图卡 · 错词本"
+    override val preferredWidth: Dp = 204.dp
+    override val lowPowerNote = "本地 Room"
 
     @Composable
     override fun Render(
@@ -367,8 +452,8 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
                         )
                     }
                     Text(
-                        text = "${vocab.masteredCount}/${vocab.totalInBook}",
-                        style = MaterialTheme.typography.labelMedium,
+                        text = if (vocab.mistakeCount > 0) "${vocab.masteredCount}/${vocab.totalInBook} · 错${vocab.mistakeCount}" else "${vocab.masteredCount}/${vocab.totalInBook}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -382,10 +467,11 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = previewWord?.phonetic ?: "开始刷词 ›",
+                        text = previewWord?.rootBreakdown?.ifBlank { previewWord.phonetic } ?: "点击进入百词斩 ›",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
@@ -405,10 +491,10 @@ object VocabProgressWidgetPlugin : PenWidgetPlugin {
 
 object PinnedAppsWidgetPlugin : PenWidgetPlugin {
     override val id = "pinned_apps"
-    override val title = "精选应用栏"
-    override val subtitle = "类 CarPlay 仅展示指定常用软件"
-    override val preferredWidth: Dp = 196.dp
-    override val lowPowerNote = "图标轻量缓存"
+    override val title = "常用应用"
+    override val subtitle = "支持自定义图标 + 一键打开全部应用抽屉"
+    override val preferredWidth: Dp = 206.dp
+    override val lowPowerNote = "轻量图标缓存"
 
     @Composable
     override fun Render(
@@ -427,7 +513,8 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
 
         AdaptiveWidgetCard(
             modifier = modifier.testTag("widget_pinned_apps"),
-            darkBorderColor = accent.copy(alpha = 0.28f)
+            darkBorderColor = accent.copy(alpha = 0.28f),
+            onClick = if (visiblePinned.isEmpty()) actions.onOpenAllApps else null
         ) {
             Column(
                 modifier = Modifier.fillMaxSize(),
@@ -436,12 +523,17 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { actions.onOpenAllApps() }
+                        .padding(vertical = 1.dp)
+                        .testTag("open_all_apps_button")
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Rounded.Apps,
-                            contentDescription = "精选应用",
+                            contentDescription = "常用应用",
                             tint = if (colors.isAppleLight) MaterialTheme.colorScheme.onSurface else accent,
                             modifier = Modifier.size(15.dp)
                         )
@@ -453,19 +545,21 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                         )
                     }
                     Text(
-                        text = "${visiblePinned.size} 个",
+                        text = "全部应用 ›",
                         style = MaterialTheme.typography.labelSmall,
-                        color = colors.textMuted
+                        color = colors.linkAccent
                     )
                 }
 
                 if (visiblePinned.isEmpty()) {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable { actions.onOpenAllApps() },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "在密室勾选常驻应用",
+                            text = "轻触打开全部应用并固定常用软件",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -473,7 +567,7 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                 } else {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         visiblePinned.forEach { appInfo ->
@@ -481,34 +575,19 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { actions.onLaunchApp(appInfo.packageName) }
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                val bmp = appInfo.iconBitmap
-                                if (bmp != null) {
-                                    Image(
-                                        bitmap = bmp.asImageBitmap(),
-                                        contentDescription = appInfo.label,
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(RoundedCornerShape(9.dp))
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(RoundedCornerShape(9.dp))
-                                            .background(colors.chipSurface),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = appInfo.label.take(1),
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
+                                    .springPressScale(pressedScale = 0.90f) {
+                                        actions.onLaunchApp(appInfo.packageName)
                                     }
-                                }
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .padding(vertical = 3.dp)
+                                    .testTag("pinned_app_${appInfo.packageName}")
+                            ) {
+                                PenAppIconImage(
+                                    appInfo = appInfo,
+                                    customIconSpec = state.config.customAppIcons[appInfo.packageName],
+                                    sizeDp = 36.dp,
+                                    cornerDp = 10.dp
+                                )
                                 Spacer(modifier = Modifier.height(3.dp))
                                 Text(
                                     text = appInfo.label,
@@ -529,8 +608,8 @@ object PinnedAppsWidgetPlugin : PenWidgetPlugin {
 object PenStatusWidgetPlugin : PenWidgetPlugin {
     override val id = "pen_status"
     override val title = "笔端状态"
-    override val subtitle = "电量 / 1GB 内存监测与一键息屏待机"
-    override val preferredWidth: Dp = 154.dp
+    override val subtitle = "电量 / 内存 / 快捷控制中心与息屏"
+    override val preferredWidth: Dp = 160.dp
     override val lowPowerNote = "10秒低频采样"
 
     @Composable

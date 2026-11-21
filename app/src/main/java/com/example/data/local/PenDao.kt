@@ -27,6 +27,9 @@ interface VocabDao {
     suspend fun insertWords(words: List<VocabWordEntity>)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertWords(words: List<VocabWordEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertProgress(progress: VocabProgressEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -76,6 +79,24 @@ interface TodoDao {
 
     @Query("DELETE FROM todo_items WHERE isDone = 1")
     suspend fun clearCompleted()
+}
+
+@Dao
+interface CalendarEventDao {
+    @Query("SELECT * FROM calendar_events ORDER BY dateIso ASC, timeHHmm ASC, createdAt ASC")
+    fun observeAllEvents(): Flow<List<CalendarEventEntity>>
+
+    @Query("SELECT COUNT(*) FROM calendar_events")
+    suspend fun getEventCount(): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEvent(event: CalendarEventEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertEvents(events: List<CalendarEventEntity>)
+
+    @Query("DELETE FROM calendar_events WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao

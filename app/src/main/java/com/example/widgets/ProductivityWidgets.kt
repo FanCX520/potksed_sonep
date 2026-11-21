@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material.icons.rounded.Thunderstorm
 import androidx.compose.material.icons.rounded.WaterDrop
@@ -62,15 +63,12 @@ fun wmoWeatherIcon(code: Int): ImageVector = when (code) {
     else -> Icons.Rounded.WaterDrop
 }
 
-/**
- * New Plugin 6: Weather Widget (Open-Meteo manual city + offline cache)
- */
 object WeatherWidgetPlugin : PenWidgetPlugin {
     override val id = "weather"
     override val title = "天气预报"
-    override val subtitle = "手动城市搜索 · 零 GPS 低功耗缓存"
-    override val preferredWidth: Dp = 184.dp
-    override val lowPowerNote = "每小时缓存刷新"
+    override val subtitle = "国内备案天气源 · 多城市切换缓存"
+    override val preferredWidth: Dp = 190.dp
+    override val lowPowerNote = "校园网直连"
 
     @Composable
     override fun Render(
@@ -147,6 +145,7 @@ object WeatherWidgetPlugin : PenWidgetPlugin {
                     Text(
                         text = "${weather.tempC.roundToInt()}°",
                         style = MaterialTheme.typography.displayMedium.copy(
+                            fontFamily = PenTheme.clockFont,
                             fontSize = 36.sp,
                             lineHeight = 36.sp
                         ),
@@ -167,7 +166,7 @@ object WeatherWidgetPlugin : PenWidgetPlugin {
                 }
 
                 Text(
-                    text = if (isLight) "湿度 ${weather.humidity}% · 切换城市 ›" else "湿度 ${weather.humidity}% · 风速 ${weather.windKmh.roundToInt()}km/h",
+                    text = "${state.weatherSourceStatus} · 湿度${weather.humidity}% · 换城 ›",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (isLight) colors.linkAccent else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -178,15 +177,12 @@ object WeatherWidgetPlugin : PenWidgetPlugin {
     }
 }
 
-/**
- * New Plugin 7: Calendar Week-Strip & Today Hero Widget
- */
 object CalendarWidgetPlugin : PenWidgetPlugin {
     override val id = "calendar"
-    override val title = "日历视图"
-    override val subtitle = "今日大日期 + 本周进度条 + 月历联动"
-    override val preferredWidth: Dp = 204.dp
-    override val lowPowerNote = "本地日历零联网"
+    override val title = "日历日程"
+    override val subtitle = "自定义定时日程 + 本周进度 + 完整月历"
+    override val preferredWidth: Dp = 212.dp
+    override val lowPowerNote = "定时日程"
 
     @Composable
     override fun Render(
@@ -198,13 +194,16 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
         val isLight = colors.isAppleLight
         val accent = if (isLight) colors.primaryAction else colors.standByCoral
 
-        val calData = remember(state.clock.isoDate, state.todos) {
+        val calData = remember(state.clock.isoDate, state.todos, state.calendarEvents) {
             val cal = Calendar.getInstance()
             val todayDay = cal.get(Calendar.DAY_OF_MONTH)
             val yearMonth = SimpleDateFormat("yyyy年M月", Locale.CHINA).format(cal.time)
             val weekday = SimpleDateFormat("EEEE", Locale.CHINA).format(cal.time)
 
-            val pendingDates = state.todos.filter { !it.isDone }.map { it.dueDateIso }.toSet()
+            val markedDates = buildSet {
+                state.todos.filter { !it.isDone }.forEach { add(it.dueDateIso) }
+                state.calendarEvents.forEach { add(it.dateIso) }
+            }
             val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
             val weekStart = (cal.clone() as Calendar).apply {
@@ -216,9 +215,12 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
                 val d = (weekStart.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, offset) }
                 val dayNum = d.get(Calendar.DAY_OF_MONTH)
                 val iso = isoFmt.format(d.time)
-                Triple(weekLabels[offset], dayNum, Pair(iso == state.clock.isoDate, pendingDates.contains(iso)))
+                Triple(weekLabels[offset], dayNum, Pair(iso == state.clock.isoDate, markedDates.contains(iso)))
             }
-            QuadCalendarInfo(todayDay, yearMonth, weekday, days)
+            val todayNextEvent = state.calendarEvents
+                .filter { it.dateIso == state.clock.isoDate }
+                .minByOrNull { it.timeHHmm }
+            QuadCalendarInfo(todayDay, yearMonth, weekday, days, todayNextEvent?.let { "${it.timeHHmm} ${it.title}" })
         }
 
         AdaptiveWidgetCard(
@@ -256,7 +258,6 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
                     )
                 }
 
-                // Giant Apple-style date + compact week strip
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -265,8 +266,9 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
                     Text(
                         text = calData.todayDay.toString(),
                         style = MaterialTheme.typography.displayMedium.copy(
-                            fontSize = 34.sp,
-                            lineHeight = 34.sp
+                            fontFamily = PenTheme.clockFont,
+                            fontSize = 33.sp,
+                            lineHeight = 33.sp
                         ),
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -276,7 +278,7 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         calData.weekDays.forEach { (wLabel, num, flags) ->
-                            val (isToday, hasTodo) = flags
+                            val (isToday, hasMark) = flags
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -306,18 +308,29 @@ object CalendarWidgetPlugin : PenWidgetPlugin {
                                     modifier = Modifier
                                         .size(3.dp)
                                         .clip(CircleShape)
-                                        .background(if (hasTodo) colors.linkAccent else Color.Transparent)
+                                        .background(if (hasMark) colors.linkAccent else Color.Transparent)
                                 )
                             }
                         }
                     }
                 }
 
-                Text(
-                    text = if (isLight) "查看完整月历 ›" else "轻触展开完整月历与日程",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isLight) colors.linkAccent else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Rounded.Schedule,
+                        contentDescription = null,
+                        tint = if (calData.nextEventText != null) accent else colors.linkAccent,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = calData.nextEventText ?: "轻触添加自定义时间日程 ›",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (calData.nextEventText != null) MaterialTheme.colorScheme.onSurface else colors.linkAccent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -327,12 +340,10 @@ private data class QuadCalendarInfo(
     val todayDay: Int,
     val yearMonth: String,
     val weekday: String,
-    val weekDays: List<Triple<String, Int, Pair<Boolean, Boolean>>>
+    val weekDays: List<Triple<String, Int, Pair<Boolean, Boolean>>>,
+    val nextEventText: String?
 )
 
-/**
- * New Plugin 8: Todo Reminders Widget (1-tap desktop check-off + quick manager)
- */
 object TodoWidgetPlugin : PenWidgetPlugin {
     override val id = "todo"
     override val title = "待办事项"
@@ -389,7 +400,9 @@ object TodoWidgetPlugin : PenWidgetPlugin {
 
                 if (displayTodos.isEmpty()) {
                     Box(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(

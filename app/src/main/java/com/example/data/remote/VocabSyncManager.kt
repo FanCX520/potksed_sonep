@@ -59,11 +59,7 @@ class VocabSyncManager(
     private val payloadAdapter = moshi.adapter(SyncPayload::class.java)
 
     private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .writeTimeout(12, TimeUnit.SECONDS)
-            .build()
+        Api21NetworkFactory.createClient(connectTimeoutSec = 10, readTimeoutSec = 12)
     }
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {

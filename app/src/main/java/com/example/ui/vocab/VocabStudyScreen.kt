@@ -1,8 +1,12 @@
 package com.example.ui.vocab
 
 import android.speech.tts.TextToSpeech
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,19 +26,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,7 +53,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -51,13 +64,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.PenOsUiState
 import com.example.ui.VocabQuizOption
+import com.example.ui.theme.PenMotion
 import com.example.ui.theme.PenTheme
+import com.example.ui.theme.springPressScale
 import java.util.Locale
 
 private val BOOK_LABELS = listOf(
-    "highschool" to "高中核心",
-    "cet4" to "四级高频",
-    "daily" to "日常实用"
+    "middle" to "中考核心",
+    "highschool" to "高考高频",
+    "cet4" to "四级精选",
+    "cet6" to "六级进阶",
+    "daily" to "日常实用",
+    "mistakes" to "错词本",
+    "custom" to "导入词书"
 )
 
 @Composable
@@ -69,11 +88,18 @@ fun VocabStudyScreen(
     onToggleHint: () -> Unit,
     onNextWord: () -> Unit,
     onSwitchBook: (String) -> Unit,
+    onPickVocabFile: () -> Unit,
+    onImportVocabPath: (String) -> Unit,
     onSyncWebDav: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    BackHandler(onBack = onBack)
+
     val context = LocalContext.current
     var ttsReady by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importPathText by remember { mutableStateOf("/sdcard/Download/words.txt") }
+
     val tts = remember {
         var engine: TextToSpeech? = null
         engine = TextToSpeech(context) { status ->
@@ -99,6 +125,16 @@ fun VocabStudyScreen(
     val glacier = colors.linkAccent
     val coral = colors.primaryAction
 
+    // Animated diagonal "斩" slash effect!
+    val slashProgress = remember { Animatable(0f) }
+    LaunchedEffect(vocab.slashEffectNonce) {
+        if (vocab.slashEffectNonce > 0) {
+            slashProgress.snapTo(0f)
+            slashProgress.animateTo(1f, animationSpec = tween(290))
+            slashProgress.snapTo(0f)
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -109,175 +145,240 @@ fun VocabStudyScreen(
             modifier = Modifier.fillMaxSize(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // LEFT PANE (~44%): Word + Phonetic + Offline TTS + Baicizhan "斩" + Book Switcher
+            // LEFT PANE (~46%): Word + Phonetic + Root Breakdown + Visual Scene Cue + TTS + 斩/例句/导入/换词
             Surface(
                 modifier = Modifier
-                    .weight(0.44f)
+                    .weight(0.46f)
                     .fillMaxHeight(),
                 shape = RoundedCornerShape(colors.cardCornerRadius),
                 color = colors.glassCardElevated,
                 border = if (colors.showCardBorder) BorderStroke(1.dp, colors.glassBorder) else null
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // Header row: Back + Book cycle pill + Cloud Sync
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = onBack,
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("vocab_back_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                    contentDescription = "返回桌面",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            val bookName = BOOK_LABELS.firstOrNull { it.first == vocab.activeBook }?.second ?: "词库"
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = glacier.copy(alpha = 0.16f),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val idx = BOOK_LABELS.indexOfFirst { it.first == vocab.activeBook }
-                                        val next = BOOK_LABELS[(idx + 1) % BOOK_LABELS.size].first
-                                        onSwitchBook(next)
-                                    }
-                                    .testTag("vocab_book_switch")
-                            ) {
-                                Text(
-                                    text = "$bookName ${vocab.masteredCount}/${vocab.totalInBook}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = glacier,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = onSyncWebDav,
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("vocab_quick_sync_button")
+                        // Top Row: Back + Graded Book Switcher (incl. 错词本/导入词书) + Import + Sync
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (state.isSyncing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(15.dp),
-                                    strokeWidth = 1.5.dp,
-                                    color = glacier
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Rounded.CloudSync,
-                                    contentDescription = "云同步单词进度",
-                                    tint = glacier,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = onBack,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("vocab_back_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                        contentDescription = "返回桌面",
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(3.dp))
+                                val bookName = BOOK_LABELS.firstOrNull { it.first == vocab.activeBook }?.second ?: "词库"
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (vocab.activeBook == "mistakes") colors.dangerRose.copy(alpha = 0.18f) else glacier.copy(alpha = 0.16f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            val idx = BOOK_LABELS.indexOfFirst { it.first == vocab.activeBook }
+                                            val next = BOOK_LABELS[(idx + 1) % BOOK_LABELS.size].first
+                                            onSwitchBook(next)
+                                        }
+                                        .testTag("vocab_book_switch")
+                                ) {
+                                    Text(
+                                        text = "$bookName ${vocab.masteredCount}/${vocab.totalInBook}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = if (vocab.activeBook == "mistakes") colors.dangerRose else glacier,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                    )
+                                }
                             }
-                        }
-                    }
 
-                    // Center Word & Phonetic + Speak button
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = currentWord?.word ?: "Loading...",
-                                style = MaterialTheme.typography.headlineMedium.copy(
-                                    fontSize = 23.sp,
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = currentWord?.phonetic ?: "",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1
-                            )
-                        }
-                        Surface(
-                            shape = CircleShape,
-                            color = coral.copy(alpha = 0.18f),
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable {
-                                    if (ttsReady && currentWord != null) {
-                                        tts.speak(currentWord.word, TextToSpeech.QUEUE_FLUSH, null, "penos_word")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { showImportDialog = true },
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .testTag("vocab_import_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.FileUpload,
+                                        contentDescription = "导入TXT/CSV词书",
+                                        tint = colors.poetryGold,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onSyncWebDav,
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .testTag("vocab_quick_sync_button")
+                                ) {
+                                    if (state.isSyncing) {
+                                        CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 1.5.dp, color = glacier)
+                                    } else {
+                                        Icon(Icons.Rounded.CloudSync, contentDescription = "云同步", tint = glacier, modifier = Modifier.size(16.dp))
                                     }
                                 }
-                                .testTag("vocab_speak_button")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
-                                    contentDescription = "朗读单词",
-                                    tint = coral,
-                                    modifier = Modifier.size(18.dp)
-                                )
                             }
+                        }
+
+                        // Middle: Word + Phonetic + Root/Affix Pill + Visual Memory Cue
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = currentWord?.word ?: "Loading...",
+                                        style = MaterialTheme.typography.headlineMedium.copy(
+                                            fontSize = 19.sp,
+                                            lineHeight = 21.sp,
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${currentWord?.phonetic.orEmpty()}  今日${vocab.dailyMasteredCount}/${state.config.vocabDailyGoal}  连胜${vocab.sessionStreak}",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 9.sp,
+                                            lineHeight = 11.sp
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Surface(
+                                    shape = CircleShape,
+                                    color = coral.copy(alpha = 0.18f),
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .springPressScale {
+                                            if (ttsReady && currentWord != null) {
+                                                tts.speak(currentWord.word, TextToSpeech.QUEUE_FLUSH, null, "penos_word")
+                                            }
+                                        }
+                                        .clip(CircleShape)
+                                        .testTag("vocab_speak_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.AutoMirrored.Rounded.VolumeUp, contentDescription = "朗读", tint = coral, modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(3.dp))
+
+                            // Word Root & Visual Scene Cue Card (Real Baicizhan Memory Aid!)
+                            if (currentWord != null) {
+                                val rootText = currentWord.rootBreakdown.ifBlank { currentWord.mnemonicTag }
+                                val cueText = currentWord.visualCue.ifBlank { currentWord.exampleZh }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = colors.chipSurface.copy(alpha = 0.72f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = colors.poetryGold, modifier = Modifier.size(10.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "$rootText · $cueText",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 9.sp,
+                                                lineHeight = 11.sp
+                                            ),
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bottom Action Strip: 斩 (with slash anim) / 例句 / 换词
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            CompactActionChip(
+                                label = "斩",
+                                icon = Icons.Rounded.ContentCut,
+                                tint = emerald,
+                                onClick = onKillWord,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("vocab_kill_button")
+                            )
+                            CompactActionChip(
+                                label = "例句",
+                                icon = Icons.Rounded.Lightbulb,
+                                tint = colors.poetryGold,
+                                onClick = onToggleHint,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("vocab_hint_button")
+                            )
+                            CompactActionChip(
+                                label = "换词",
+                                icon = Icons.Rounded.SkipNext,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                onClick = onNextWord,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("vocab_next_button")
+                            )
                         }
                     }
 
-                    // Bottom Action Strip: 斩 (Kill) / 提示 (Hint) / 跳过 (Next)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CompactActionChip(
-                            label = "斩",
-                            icon = Icons.Rounded.ContentCut,
-                            tint = emerald,
-                            onClick = onKillWord,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("vocab_kill_button")
-                        )
-                        CompactActionChip(
-                            label = "例句",
-                            icon = Icons.Rounded.Lightbulb,
-                            tint = PenTheme.colors.poetryGold,
-                            onClick = onToggleHint,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("vocab_hint_button")
-                        )
-                        CompactActionChip(
-                            label = "换词",
-                            icon = Icons.Rounded.SkipNext,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            onClick = onNextWord,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("vocab_next_button")
-                        )
+                    // Diagonal Animated Slash Overlay when "斩" is triggered!
+                    if (slashProgress.value > 0f) {
+                        val p = slashProgress.value
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val start = Offset(size.width * 0.08f, size.height * 0.85f)
+                            val end = Offset(
+                                start.x + (size.width * 0.84f) * p,
+                                start.y - (size.height * 0.72f) * p
+                            )
+                            drawLine(
+                                color = emerald.copy(alpha = (1f - p * 0.55f).coerceIn(0f, 1f)),
+                                start = start,
+                                end = end,
+                                strokeWidth = 10f,
+                                cap = StrokeCap.Round
+                            )
+                        }
                     }
                 }
             }
 
-            // RIGHT PANE (~56%): 2x2 Baicizhan Meaning Cards + Example Hint Bar
+            // RIGHT PANE (~54%): 2x2 Baicizhan Spring Meaning Cards + Example Hint Bar
             Column(
                 modifier = Modifier
-                    .weight(0.56f)
+                    .weight(0.54f)
                     .fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -285,16 +386,16 @@ fun VocabStudyScreen(
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
-                        color = PenTheme.colors.poetryGold.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, PenTheme.colors.poetryGold.copy(alpha = 0.35f))
+                        color = colors.poetryGold.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, colors.poetryGold.copy(alpha = 0.35f))
                     ) {
                         Text(
                             text = currentWord?.let { "${it.exampleEn}  ${it.exampleZh}" }.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                         )
                     }
                 }
@@ -302,42 +403,102 @@ fun VocabStudyScreen(
                 val opts = vocab.options
                 if (opts.size >= 4) {
                     Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        VocabOptionCard(
-                            option = opts[0],
-                            selectedId = vocab.selectedOptionId,
-                            onClick = { onSelectOption(opts[0].wordId) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        VocabOptionCard(
-                            option = opts[1],
-                            selectedId = vocab.selectedOptionId,
-                            onClick = { onSelectOption(opts[1].wordId) },
-                            modifier = Modifier.weight(1f)
-                        )
+                        VocabOptionCard(opts[0], vocab.selectedOptionId, { onSelectOption(opts[0].wordId) }, Modifier.weight(1f))
+                        VocabOptionCard(opts[1], vocab.selectedOptionId, { onSelectOption(opts[1].wordId) }, Modifier.weight(1f))
                     }
                     Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        VocabOptionCard(
-                            option = opts[2],
-                            selectedId = vocab.selectedOptionId,
-                            onClick = { onSelectOption(opts[2].wordId) },
-                            modifier = Modifier.weight(1f)
+                        VocabOptionCard(opts[2], vocab.selectedOptionId, { onSelectOption(opts[2].wordId) }, Modifier.weight(1f))
+                        VocabOptionCard(opts[3], vocab.selectedOptionId, { onSelectOption(opts[3].wordId) }, Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+
+        // Inline TXT/CSV Custom Wordbook Importer (MT Manager + Direct Path)
+        AnimatedVisibility(
+            visible = showImportDialog,
+            enter = PenMotion.overlayEnter(),
+            exit = PenMotion.overlayExit()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.overlayScrim)
+                    .clickable { showImportDialog = false }
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(enabled = false) {},
+                    shape = RoundedCornerShape(colors.cardCornerRadius),
+                    color = colors.glassCardElevated,
+                    border = if (colors.showCardBorder) BorderStroke(1.dp, colors.glassBorderBright) else null
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("导入自定义 TXT / CSV 词书（支持 MT 管理器）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                            IconButton(onClick = { showImportDialog = false }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                            }
+                        }
+
+                        Text(
+                            text = "每行格式支持：word,音标,中文释义,例句  或  word\\t释义  或  word - 释义",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.textMuted
                         )
-                        VocabOptionCard(
-                            option = opts[3],
-                            selectedId = vocab.selectedOptionId,
-                            onClick = { onSelectOption(opts[3].wordId) },
-                            modifier = Modifier.weight(1f)
-                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = importPathText,
+                                onValueChange = { importPathText = it },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    onImportVocabPath(importPathText)
+                                    showImportDialog = false
+                                },
+                                shape = RoundedCornerShape(980.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.primaryAction),
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text("从路径导入", style = MaterialTheme.typography.labelSmall)
+                            }
+                            Button(
+                                onClick = {
+                                    showImportDialog = false
+                                    onPickVocabFile()
+                                },
+                                shape = RoundedCornerShape(980.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.vocabEmerald),
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text("MT 管理器选择", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                     }
                 }
             }
@@ -355,9 +516,9 @@ private fun CompactActionChip(
 ) {
     Surface(
         modifier = modifier
-            .height(32.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick),
+            .height(30.dp)
+            .springPressScale(pressedScale = 0.92f, onClick = onClick)
+            .clip(RoundedCornerShape(10.dp)),
         shape = RoundedCornerShape(10.dp),
         color = tint.copy(alpha = 0.14f),
         border = BorderStroke(1.dp, tint.copy(alpha = 0.30f))
@@ -365,21 +526,11 @@ private fun CompactActionChip(
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(horizontal = 6.dp)
+            modifier = Modifier.padding(horizontal = 5.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = tint,
-                modifier = Modifier.size(14.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = tint,
-                fontWeight = FontWeight.Bold
-            )
+            Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(13.dp))
+            Spacer(modifier = Modifier.width(3.dp))
+            Text(text = label, style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -413,8 +564,8 @@ private fun VocabOptionCard(
     Surface(
         modifier = modifier
             .fillMaxHeight()
+            .then(if (!revealed) Modifier.springPressScale(pressedScale = 0.94f, onClick = onClick) else Modifier)
             .clip(RoundedCornerShape(colors.cardCornerRadius))
-            .clickable(enabled = !revealed, onClick = onClick)
             .testTag("vocab_option_${option.wordId}"),
         shape = RoundedCornerShape(colors.cardCornerRadius),
         color = bgColor,
@@ -423,7 +574,7 @@ private fun VocabOptionCard(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 10.dp, vertical = 7.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
@@ -431,10 +582,7 @@ private fun VocabOptionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = cueColor.copy(alpha = 0.18f)
-                ) {
+                Surface(shape = RoundedCornerShape(6.dp), color = cueColor.copy(alpha = 0.18f)) {
                     Text(
                         text = option.mnemonicTag,
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
@@ -443,12 +591,7 @@ private fun VocabOptionCard(
                     )
                 }
                 if (revealed && option.isCorrect) {
-                    Icon(
-                        imageVector = Icons.Rounded.CheckCircle,
-                        contentDescription = "正确",
-                        tint = emerald,
-                        modifier = Modifier.size(14.dp)
-                    )
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = "正确", tint = emerald, modifier = Modifier.size(14.dp))
                 }
             }
 

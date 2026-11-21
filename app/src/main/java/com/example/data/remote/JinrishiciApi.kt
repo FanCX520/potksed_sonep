@@ -10,12 +10,10 @@ import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Header
-import java.util.concurrent.TimeUnit
 
 @JsonClass(generateAdapter = true)
 data class JinrishiciTokenResponse(
@@ -62,12 +60,9 @@ class PoetryRepository(
         val moshi = Moshi.Builder()
             .add(KotlinJsonAdapterFactory())
             .build()
-        val client = OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .build()
+        val client = Api21NetworkFactory.createClient(connectTimeoutSec = 7, readTimeoutSec = 7)
         Retrofit.Builder()
-            .baseUrl("https://v2.jinrishici.com/")
+            .baseUrl("https://v2.jinrishici.com/") // China ICP-filed
             .client(client)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
@@ -82,15 +77,11 @@ class PoetryRepository(
         }
     }
 
-    /**
-     * Low-power smart fetch: only hits Jinrishici API when forced by user or > 60 min elapsed.
-     * Falls back seamlessly to rotating offline classical poems if offline.
-     */
     suspend fun refreshPoem(force: Boolean): Result<CachedPoemEntity> = withContext(Dispatchers.IO) {
         ensureSeeded()
         val config = prefs.currentConfig()
         val now = System.currentTimeMillis()
-        val minIntervalMs = 60L * 60L * 1000L // 60 minutes for low battery consumption
+        val minIntervalMs = 60L * 60L * 1000L
 
         if (!force && (now - config.lastPoemFetchAt) < minIntervalMs) {
             val cached = poemDao.getCachedPoems().firstOrNull() ?: OfflineSeedData.defaultPoems.first()

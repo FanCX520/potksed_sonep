@@ -16,7 +16,9 @@ data class VocabWordEntity(
     val exampleEn: String,
     val exampleZh: String,
     val bookId: String,
-    val accentHex: Long
+    val accentHex: Long,
+    val rootBreakdown: String = "",
+    val visualCue: String = ""
 )
 
 @Entity(tableName = "vocab_progress")
@@ -65,6 +67,15 @@ data class TodoItemEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "calendar_events")
+data class CalendarEventEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val dateIso: String, // yyyy-MM-dd
+    val timeHHmm: String, // HH:mm
+    val title: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "cached_weather")
 data class CachedWeatherEntity(
     @PrimaryKey val id: String = "current",
@@ -77,6 +88,6 @@ data class CachedWeatherEntity(
     val weatherCode: Int,
     val tempMaxC: Double,
     val tempMinC: Double,
-    val dailySummary: String, // "明 晴 18°/8°|后 多云 16°/7°"
+    val dailySummary: String,
     val fetchedAt: Long
 )

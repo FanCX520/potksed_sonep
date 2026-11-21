@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import android.graphics.Typeface
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -7,7 +8,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
+import java.io.File
 
+/**
+ * Unified sculpted clock display font shared across BOTH Dark StandBy CarPlay and Apple White Gallery.
+ * Guarantees consistent clock numbers across Left Dock, StandBy giant clock, and Full-Screen Pomodoro.
+ */
 val OutfitFontFamily = FontFamily(
     Font(R.font.outfit, FontWeight.Normal),
     Font(R.font.outfit, FontWeight.Medium),
@@ -15,36 +21,65 @@ val OutfitFontFamily = FontFamily(
     Font(R.font.outfit, FontWeight.Bold)
 )
 
+val UnifiedClockFontFamily: FontFamily = OutfitFontFamily
+
 val JetBrainsMonoFontFamily = FontFamily(
     Font(R.font.jetbrains_mono, FontWeight.Normal),
     Font(R.font.jetbrains_mono, FontWeight.Medium),
     Font(R.font.jetbrains_mono, FontWeight.Bold)
 )
 
-// Apple SF Pro Display / SF Pro Text official substitute from DESIGN_4374f950.md
+// Apple SF Pro Display / SF Pro Text substitute for body/UI hierarchy in White Gallery mode
 val InterFontFamily = FontFamily(
     Font(R.font.inter, FontWeight.Normal),
     Font(R.font.inter, FontWeight.Medium),
     Font(R.font.inter, FontWeight.SemiBold)
 )
 
+// Bundled Noto Serif SC (思源宋体) dedicated to Classical Chinese Poetry (今日诗词)
+val NotoSerifScFontFamily = FontFamily(
+    Font(R.font.noto_serif_sc, FontWeight.Normal),
+    Font(R.font.noto_serif_sc, FontWeight.Medium),
+    Font(R.font.noto_serif_sc, FontWeight.SemiBold)
+)
+
+/**
+ * Loads an optional user-specified external .ttf/.otf font (e.g. full Noto Serif SC from /sdcard/Fonts/),
+ * gracefully falling back to the bundled NotoSerifScFontFamily if missing or invalid.
+ */
+fun resolvePoetryFontFamily(externalFontPath: String): FontFamily {
+    if (externalFontPath.isBlank()) return NotoSerifScFontFamily
+    return try {
+        val file = File(externalFontPath)
+        if (file.exists() && file.isFile && file.length() > 1024L) {
+            FontFamily(Typeface.createFromFile(file))
+        } else {
+            NotoSerifScFontFamily
+        }
+    } catch (_: Exception) {
+        NotoSerifScFontFamily
+    }
+}
+
 val PenOsTypography = Typography(
     displayLarge = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = UnifiedClockFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 68.sp,
         lineHeight = 72.sp,
-        letterSpacing = (-2.0).sp
+        letterSpacing = (-1.6).sp,
+        fontFeatureSettings = "tnum"
     ),
     displayMedium = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = UnifiedClockFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 44.sp,
         lineHeight = 48.sp,
-        letterSpacing = (-1.0).sp
+        letterSpacing = (-0.8).sp,
+        fontFeatureSettings = "tnum"
     ),
     headlineMedium = TextStyle(
-        fontFamily = OutfitFontFamily,
+        fontFamily = UnifiedClockFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
         lineHeight = 26.sp,
@@ -90,26 +125,26 @@ val PenOsTypography = Typography(
     )
 )
 
-// Apple White Gallery Vitrine Typography: Weight 600 SemiBold carved headings + tight negative tracking
+// Apple White Gallery Vitrine Typography: shares UnifiedClockFontFamily for clocks, Inter for clean UI copy
 val AppleGalleryTypography = Typography(
     displayLarge = TextStyle(
-        fontFamily = InterFontFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 66.sp,
-        lineHeight = 70.sp,
-        letterSpacing = (-1.2).sp,
+        fontFamily = UnifiedClockFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 68.sp,
+        lineHeight = 72.sp,
+        letterSpacing = (-1.6).sp,
         fontFeatureSettings = "tnum"
     ),
     displayMedium = TextStyle(
-        fontFamily = InterFontFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 42.sp,
-        lineHeight = 46.sp,
-        letterSpacing = (-0.4).sp,
+        fontFamily = UnifiedClockFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 44.sp,
+        lineHeight = 48.sp,
+        letterSpacing = (-0.8).sp,
         fontFeatureSettings = "tnum"
     ),
     headlineMedium = TextStyle(
-        fontFamily = InterFontFamily,
+        fontFamily = UnifiedClockFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 21.sp,
         lineHeight = 25.sp,

@@ -6,8 +6,10 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -40,10 +42,6 @@ data class PenOsExtendedColors(
 
 private val DarkExtendedColors = PenOsExtendedColors()
 
-// Exact Apple White Gallery Vitrine mapping from DESIGN_4374f950.md:
-// Pure White canvas (#FFFFFF), Fog Mist (#F3F6F6) & Paper Gray (#FAFAFC) tint cards,
-// Silver Smoke (#E8E8ED) chips, ZERO borders / ZERO shadows, Apple Blue (#0071E3) primary CTA,
-// Link Blue (#0066CC) secondary links, Ember (#B64400) naked badges.
 private val AppleLightExtendedColors = PenOsExtendedColors(
     isAppleLight = true,
     pureBlack = AppleTrueBlack,
@@ -71,6 +69,7 @@ private val AppleLightExtendedColors = PenOsExtendedColors(
 )
 
 val LocalPenOsColors = staticCompositionLocalOf { DarkExtendedColors }
+val LocalPoetryFontFamily = staticCompositionLocalOf<FontFamily> { NotoSerifScFontFamily }
 
 private val PenOsDarkColorScheme = darkColorScheme(
     primary = StandByCoral,
@@ -119,13 +118,20 @@ private val AppleLightColorScheme = lightColorScheme(
 @Composable
 fun PenOsTheme(
     isAppleLight: Boolean = false,
+    externalPoetryFontPath: String = "",
     content: @Composable () -> Unit
 ) {
     val extendedColors = if (isAppleLight) AppleLightExtendedColors else DarkExtendedColors
     val colorScheme = if (isAppleLight) AppleLightColorScheme else PenOsDarkColorScheme
     val typography = if (isAppleLight) AppleGalleryTypography else PenOsTypography
+    val poetryFont = remember(externalPoetryFontPath) {
+        resolvePoetryFontFamily(externalPoetryFontPath)
+    }
 
-    CompositionLocalProvider(LocalPenOsColors provides extendedColors) {
+    CompositionLocalProvider(
+        LocalPenOsColors provides extendedColors,
+        LocalPoetryFontFamily provides poetryFont
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,
@@ -137,4 +143,10 @@ fun PenOsTheme(
 object PenTheme {
     val colors: PenOsExtendedColors
         @Composable get() = LocalPenOsColors.current
+
+    val poetryFont: FontFamily
+        @Composable get() = LocalPoetryFontFamily.current
+
+    val clockFont: FontFamily
+        get() = UnifiedClockFontFamily
 }

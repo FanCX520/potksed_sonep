@@ -12,6 +12,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
@@ -31,7 +33,6 @@ class BootCompletedReceiver : BroadcastReceiver() {
             action == "android.intent.action.QUICKBOOT_POWERON" ||
             action == "com.htc.intent.action.QUICKBOOT_POWERON"
         ) {
-            // Start low-power keep-alive service
             try {
                 val svcIntent = Intent(context, PenKeepAliveService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -40,17 +41,14 @@ class BootCompletedReceiver : BroadcastReceiver() {
                     context.startService(svcIntent)
                 }
             } catch (_: Exception) {
-                // Ignore background restriction on newer Android if not default home yet
             }
 
-            // Bring PenOS Home to foreground on boot
             try {
                 val launch = Intent(context, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 }
                 context.startActivity(launch)
             } catch (_: Exception) {
-                // Safe fallback
             }
         }
     }
@@ -68,17 +66,22 @@ class PenLauncherGuardService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString().orEmpty()
+        val cls = event.className?.toString().orEmpty()
         if (pkg.isBlank() || pkg == packageName) return
 
-        if (AntiLockCoordinator.shouldPullBackToPenOs(pkg, packageName)) {
+        val shouldBlock = AntiLockCoordinator.shouldPullBackToPenOs(pkg, cls, packageName)
+        AntiLockCoordinator.recordWindowEvent(pkg, cls, shouldBlock)
+
+        if (shouldBlock) {
             val now = System.currentTimeMillis()
-            if (now - lastPullBackMs > 800L) {
+            if (now - lastPullBackMs > 380L) {
                 lastPullBackMs = now
                 val backHome = Intent(this, MainActivity::class.java).apply {
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
                     )
                 }
                 try {
@@ -187,7 +190,8 @@ data class SystemDiagnostics(
     val currentDefaultHomePackage: String,
     val isPenOsDefaultHome: Boolean,
     val isAccessibilityGuardActive: Boolean,
-    val isRootAvailable: Boolean
+    val isRootAvailable: Boolean,
+    val detectedStockHomeComponent: String = ""
 )
 
 object SystemTakeoverHelper {
@@ -201,13 +205,24 @@ object SystemTakeoverHelper {
             context.packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
         }
         val currentHome = resolved?.activityInfo?.packageName ?: "未设置"
+
+        @Suppress("DEPRECATION")
+        val allHomes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.packageManager.queryIntentActivities(homeIntent, PackageManager.ResolveInfoFlags.of(0L))
+        } else {
+            context.packageManager.queryIntentActivities(homeIntent, 0)
+        }
+        val stockHome = allHomes.firstOrNull { it.activityInfo?.packageName != context.packageName }
+        val stockComp = stockHome?.activityInfo?.let { "${it.packageName}/${it.name}" }.orEmpty()
+
         val isAccessibility = isAccessibilityEnabled(context) || AntiLockCoordinator.guardServiceConnected.get()
         val hasRoot = checkRootAvailable()
         SystemDiagnostics(
             currentDefaultHomePackage = currentHome,
             isPenOsDefaultHome = currentHome == context.packageName,
             isAccessibilityGuardActive = isAccessibility,
-            isRootAvailable = hasRoot
+            isRootAvailable = hasRoot,
+            detectedStockHomeComponent = stockComp
         )
     }
 
@@ -221,33 +236,100 @@ object SystemTakeoverHelper {
     }
 
     fun openHomeSettings(context: Context) {
-        val intent = Intent(Settings.ACTION_HOME_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val intent = Intent(Settings.ACTION_HOME_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         try {
             context.startActivity(intent)
         } catch (_: Exception) {
-            val fallback = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { context.startActivity(fallback) }
+            runCatching { context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
     }
 
     fun openAccessibilitySettings(context: Context) {
-        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { context.startActivity(intent) }
+        runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 
-    fun buildAdbTakeoverScript(selfPackage: String, stockLauncherPkg: String): String {
+    fun openWifiSettings(context: Context) {
+        runCatching { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+
+    fun openSystemSettings(context: Context) {
+        runCatching { context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+
+    fun canWriteSystemSettings(context: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.System.canWrite(context) else true
+
+    fun openWriteSettingsPermission(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(intent) }
+        }
+    }
+
+    fun getSystemBrightnessFraction(context: Context): Float {
+        return try {
+            val raw = Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 140)
+            (raw / 255f).coerceIn(0.05f, 1f)
+        } catch (_: Exception) {
+            0.55f
+        }
+    }
+
+    fun writeSystemBrightness(context: Context, fraction: Float): Boolean {
+        if (!canWriteSystemSettings(context)) return false
+        return try {
+            val value = (fraction.coerceIn(0.04f, 1f) * 255f).toInt().coerceIn(10, 255)
+            Settings.System.putInt(
+                context.contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+            )
+            Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, value)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun getMediaVolumeFraction(context: Context): Float {
+        return try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return 0.5f
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            (cur.toFloat() / max.toFloat()).coerceIn(0f, 1f)
+        } catch (_: Exception) {
+            0.5f
+        }
+    }
+
+    fun setMediaVolumeFraction(context: Context, fraction: Float) {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val target = (fraction.coerceIn(0f, 1f) * max).toInt().coerceIn(0, max)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun buildAdbTakeoverScript(
+        selfPackage: String,
+        stockLauncherPkg: String,
+        stockHomeComponent: String = ""
+    ): String {
         val targetStock = stockLauncherPkg.ifBlank { "<原厂桌面包名>" }
+        val homeComp = stockHomeComponent.ifBlank { "$targetStock/.HomeActivity" }
         return buildString {
-            appendLine("# 1. 将 PenOS 设为系统默认主屏幕 (Android 5.0+)")
+            appendLine("# 1. 将 PenOS 设为默认主屏幕")
             appendLine("adb shell cmd package set-home-activity $selfPackage/.MainActivity")
-            appendLine("# 若安卓 5.0 无 cmd 命令，请冻结原厂桌面后按 Home 键选择 PenOS：")
+            appendLine("# 2. 【久学网专用】仅禁用原厂 HomeActivity（保留同包名扫学功能！）")
+            appendLine("adb shell pm disable $homeComp")
+            appendLine("# 3. 如需整包冻结/恢复原厂桌面：")
             appendLine("adb shell pm disable-user --user 0 $targetStock")
-            appendLine("# 2. 如需恢复原厂桌面：")
-            appendLine("adb shell pm enable $targetStock")
+            appendLine("adb shell pm enable $homeComp")
         }.trim()
     }
 
