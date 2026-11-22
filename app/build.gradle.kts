@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.penoslauncher.xk9m2p"
     minSdk = 21
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 55
+    versionName = "5.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -142,4 +142,15 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+}
+
+tasks.register("syncRootApk") {
+  dependsOn("assembleDebug")
+  val srcApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+  val dstApk = rootProject.file("PenOS-Launcher.apk")
+  doLast {
+    srcApk.copyTo(dstApk, overwrite = true)
+    val sizeMb = String.format("%.2f", dstApk.length() / (1024.0 * 1024.0))
+    println("Synced PenOS 5.5 APK -> PenOS-Launcher.apk ($sizeMb MB)")
+  }
 }
