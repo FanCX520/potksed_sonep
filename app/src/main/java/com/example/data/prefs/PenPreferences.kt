@@ -13,9 +13,13 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.ui.theme.FontSlotSpec
+import com.example.ui.theme.GranularTypographyProfile
+import com.example.ui.theme.PenMotionTier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.security.SecureRandom
 
 private val Context.penDataStore: DataStore<Preferences> by preferencesDataStore(name = "penos_prefs")
 
@@ -34,13 +38,60 @@ data class AiPreset(
     val enableMcpTools: Boolean = true
 )
 
+/**
+ * PenOS 4.0 Multi-API AI Profile: lets the user store & switch between multiple AI providers/models
+ * (DeepSeek-V3, DeepSeek-R1, GLM-4, Qwen, Kimi, SiliconFlow, Custom LAN Ollama) with 1 tap.
+ */
+data class AiApiProfile(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val apiKey: String,
+    val model: String,
+    val systemPrompt: String = PenConfig.DEFAULT_HARNESS_PROMPT,
+    val enableMcpTools: Boolean = true,
+    val temperature: Float = 0.6f
+) {
+    fun toAiPreset(): AiPreset = AiPreset(id, name, systemPrompt, enableMcpTools)
+}
+
+data class MultiClockConfig(
+    val style: String = STYLE_BLOOM_ANALOG,
+    val shape: String = SHAPE_SCALLOP,
+    val showSeconds: Boolean = true,
+    val accentHex: Long = 0xFFFF6B4A
+) {
+    companion object {
+        const val STYLE_BLOOM_ANALOG = "bloom_analog"
+        const val STYLE_RAILWAY_SWISS = "railway_swiss"
+        const val STYLE_RETRO_FLIP = "retro_flip"
+        const val STYLE_KDE_MINIMAL = "kde_minimal"
+        const val STYLE_ROMAN_CLASSIC = "roman_classic"
+        const val STYLE_DOT_MATRIX = "dot_matrix"
+
+        const val SHAPE_CIRCLE = "circle"
+        const val SHAPE_SQUIRCLE = "squircle"
+        const val SHAPE_SCALLOP = "scallop"
+        const val SHAPE_PILL = "pill"
+
+        val allStyles: List<Pair<String, String>> = listOf(
+            STYLE_BLOOM_ANALOG to "M3 花瓣指针",
+            STYLE_RAILWAY_SWISS to "瑞士铁路表",
+            STYLE_RETRO_FLIP to "复古翻页钟",
+            STYLE_KDE_MINIMAL to "KDE 极简叠层",
+            STYLE_ROMAN_CLASSIC to "罗马典雅盘",
+            STYLE_DOT_MATRIX to "点阵 LED"
+        )
+    }
+}
+
 data class PenConfig(
     val designStyle: String = STYLE_DARK_STANDBY,
     val standByStyleMode: String = STANDBY_STYLE_OLED_DARK,
     val hiddenPackages: Set<String> = emptySet(),
     val pinnedDockPackages: List<String> = emptyList(),
     val enabledWidgetIds: List<String> = DEFAULT_WIDGET_ORDER,
-    val desktopDeckMode: String = DECK_MODE_MIXED, // mixed | native_only
+    val desktopDeckMode: String = DECK_MODE_MIXED,
     val nativeWidgetIds: List<Int> = emptyList(),
     val nativeWidgetWidths: Map<Int, Int> = emptyMap(),
     // Jiuxuewang component-level scan & anti-lock settings
@@ -48,15 +99,25 @@ data class PenConfig(
     val scanActivityClass: String = "",
     val blockedStockLauncherPackage: String = "",
     val blockedHomeActivities: Set<String> = emptySet(),
-    // Independent Wallpapers for Dark StandBy vs Apple White Gallery
+    // Independent Wallpapers + 4-mode Dynamic Wallpapers (static | procedural | gif | mp4 | live)
     val darkWallpaperPresetId: String = WALLPAPER_AURORA,
     val darkCustomWallpaperPath: String = "",
     val lightWallpaperPresetId: String = WALLPAPER_GALLERY_LIGHT,
     val lightCustomWallpaperPath: String = "",
-    // Custom App Icons (pkg -> filePath or "color:#RRGGBB")
+    val dynamicWallpaperMode: String = DYN_WALLPAPER_STATIC,
+    val proceduralWallpaperStyle: String = PROC_AURORA_FLOW,
+    val dynamicWallpaperMediaPath: String = "",
+    // Custom App Icons & Granular 5-Slot Global Dynamic Typography
     val customAppIcons: Map<String, String> = emptyMap(),
-    // External Noto Serif SC / custom poetry font path override
     val customPoetryFontPath: String = "",
+    val typographyProfile: GranularTypographyProfile = GranularTypographyProfile(),
+    // Multi-Style Clock & 60fps Motion Tier & Setup Assistant
+    val multiClock: MultiClockConfig = MultiClockConfig(),
+    val motionTierId: String = PenMotionTier.FAST.id,
+    val setupAssistantCompleted: Boolean = false,
+    // LAN Web Admin Console
+    val lanAdminPort: Int = 8765,
+    val lanAdminPin: String = "",
     // StandBy & Focus
     val standByTimeoutSec: Int = 30,
     val standByBrightness: Float = 0.08f,
@@ -69,13 +130,12 @@ data class PenConfig(
     val vaultPin: String = "",
     val keepAliveEnabled: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.O,
     val penFramePreviewEnabled: Boolean = true,
-    // Vocab
+    // Vocab & Poetry
     val activeVocabBook: String = "highschool",
     val vocabDailyGoal: Int = 20,
-    // Poetry
     val jinrishiciToken: String = "",
     val lastPoemFetchAt: Long = 0L,
-    // Weather (China ICP-filed multi-city)
+    // Weather
     val weatherCityName: String = "北京",
     val weatherCityCode: String = "101010100",
     val weatherLat: Double = 39.9042,
@@ -84,18 +144,26 @@ data class PenConfig(
     val weatherQWeatherKey: String = "",
     val weatherAmapKey: String = "",
     val lastWeatherFetchAt: Long = 0L,
-    // WebDAV Sync (China ICP-filed Nutstore default)
+    // WebDAV Sync
     val webDavUrl: String = "https://dav.jianguoyun.com/dav/PenOS/",
     val webDavUser: String = "",
     val webDavPass: String = "",
     val lastSyncTime: Long = 0L,
-    // Lab AI + Custom Presets + MCP (China ICP-filed OpenAI-compatible defaults)
+    // AI Harness Multi-API Profiles + External MCP
     val aiBaseUrl: String = "https://api.deepseek.com/v1",
     val aiApiKey: String = "",
     val aiModel: String = "deepseek-chat",
+    val aiProfiles: List<AiApiProfile> = defaultAiApiProfiles("https://api.deepseek.com/v1", "", "deepseek-chat"),
+    val activeAiProfileId: String = "deepseek_harness",
     val aiPresets: List<AiPreset> = DEFAULT_AI_PRESETS,
-    val activeAiPresetId: String = "penos_mcp",
-    val externalMcpUrl: String = ""
+    val activeAiPresetId: String = "deepseek_harness",
+    val externalMcpUrl: String = "",
+    // PenOS 5.0 Guardrails, Gesture Tuning & Auto-Sync
+    val mcpPreviewBeforeApply: Boolean = true,
+    val swipeSensitivityDp: Float = 34f,
+    val gestureHapticsEnabled: Boolean = true,
+    val mailAutoSyncEnabled: Boolean = true,
+    val lastMailAutoSyncAt: Long = 0L
 ) {
     companion object {
         const val STYLE_DARK_STANDBY = "dark_standby"
@@ -108,17 +176,26 @@ data class PenConfig(
         const val DECK_MODE_MIXED = "mixed"
         const val DECK_MODE_NATIVE_ONLY = "native_only"
 
-        // Dark style wallpapers
+        // Static wallpapers
         const val WALLPAPER_AURORA = "aurora"
         const val WALLPAPER_INK = "ink"
         const val WALLPAPER_OBSIDIAN = "obsidian"
-
-        // Apple White Gallery independent light clock wallpapers
         const val WALLPAPER_GALLERY_LIGHT = "gallery_light"
         const val WALLPAPER_PURE_MIST = "pure_mist"
         const val WALLPAPER_WARM_PAPER = "warm_paper"
-
         const val WALLPAPER_CUSTOM = "custom"
+
+        // 4 Dynamic Wallpaper Modes + Static
+        const val DYN_WALLPAPER_STATIC = "static"
+        const val DYN_WALLPAPER_PROCEDURAL = "procedural"
+        const val DYN_WALLPAPER_GIF = "gif"
+        const val DYN_WALLPAPER_MP4 = "mp4"
+        const val DYN_WALLPAPER_LIVE = "live"
+
+        const val PROC_AURORA_FLOW = "aurora_flow"
+        const val PROC_STAR_TRAILS = "star_trails"
+        const val PROC_SOFT_RAIN = "soft_rain"
+        const val PROC_GALLERY_BREEZE = "gallery_breeze"
 
         const val STANDBY_WIDGET_POETRY = "poetry"
         const val STANDBY_WIDGET_WEATHER = "weather"
@@ -143,7 +220,9 @@ data class PenConfig(
 
         val DEFAULT_WIDGET_ORDER = listOf(
             "quick_scan",
+            "multi_clock",
             "weather",
+            "mail_inbox",
             "calendar",
             "todo",
             "jinrishici",
@@ -161,33 +240,68 @@ data class PenConfig(
             SavedCityEntry("成都", "四川", "101270101", 30.5728, 104.0668)
         )
 
-        val DEFAULT_AI_PRESETS = listOf(
-            AiPreset(
-                id = "penos_mcp",
-                name = "桌面管家 · MCP",
-                systemPrompt = "你是 PenOS 词典笔智能桌面管家。你可以直接调用 MCP 工具帮助用户切换桌面主题、开关小组件、添加待办和日历定时日程、切换天气城市、开启全屏番茄钟、播放专注白噪音、调节亮度音量或收录英语生词。回答简明精炼，适合 640x172 词典笔屏幕阅读。",
+        const val DEFAULT_HARNESS_PROMPT =
+            "你是 PenOS 4.0 全权 Harness 智能桌面管家。你拥有完整的桌面编排工具：先可调用 inspect_penos_state 查看桌面、字体、抽屉与邮箱状态；可以直接用 create_custom_widget 编写声明式小组件并安装到主屏或 Apple TV 上滑抽屉；可以精细调整 5 通道全局字体、4 模式动态壁纸、6 样式时钟表盘、动画流畅度、日程待办、番茄钟、白噪音，也可以总结未读邮件并起草回复。回答精炼直接。"
+
+        fun defaultAiApiProfiles(
+            baseUrl: String = "https://api.deepseek.com/v1",
+            apiKey: String = "",
+            model: String = "deepseek-chat"
+        ): List<AiApiProfile> = listOf(
+            AiApiProfile(
+                id = "deepseek_harness",
+                name = "DeepSeek Harness 全权管家",
+                baseUrl = baseUrl.ifBlank { "https://api.deepseek.com/v1" },
+                apiKey = apiKey,
+                model = model.ifBlank { "deepseek-chat" },
+                systemPrompt = DEFAULT_HARNESS_PROMPT,
                 enableMcpTools = true
             ),
-            AiPreset(
-                id = "english_tutor",
-                name = "英语词典外教",
-                systemPrompt = "你是专业简洁的英语学习私教，擅长用词根词缀、地道例句和易混词对比讲解英语，并可在用户要求时通过工具把生词加入百词斩生词本。回复简明易读。",
+            AiApiProfile(
+                id = "glm_flash",
+                name = "智谱 GLM-4 Flash",
+                baseUrl = "https://open.bigmodel.cn/api/paas/v4",
+                apiKey = "",
+                model = "glm-4-flash",
+                systemPrompt = DEFAULT_HARNESS_PROMPT,
                 enableMcpTools = true
             ),
-            AiPreset(
-                id = "poetry_scholar",
-                name = "古诗词赏析师",
-                systemPrompt = "你是温润儒雅的中国古典诗词赏析老师，擅长简洁点拨意象、典故与名句默写技巧，适合在词典笔小屏快速阅读。",
-                enableMcpTools = false
+            AiApiProfile(
+                id = "qwen_turbo",
+                name = "通义千问 Qwen",
+                baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                apiKey = "",
+                model = "qwen-turbo",
+                systemPrompt = "你是高效简洁的英语与学习助教，擅长词根拆解、邮件起草与学习计划编排，支持调用 PenOS MCP 工具。",
+                enableMcpTools = true
             ),
-            AiPreset(
-                id = "focus_coach",
-                name = "番茄学习督导",
-                systemPrompt = "你是高效自律的学习督导，帮助用户拆解学习计划并调用工具创建日程、待办、启动番茄专注倒计时和舒缓白噪音。",
+            AiApiProfile(
+                id = "siliconflow_qwen",
+                name = "硅基流动 SiliconFlow",
+                baseUrl = "https://api.siliconflow.cn/v1",
+                apiKey = "",
+                model = "Qwen/Qwen2.5-7B-Instruct",
+                systemPrompt = DEFAULT_HARNESS_PROMPT,
+                enableMcpTools = true
+            ),
+            AiApiProfile(
+                id = "kimi_moonshot",
+                name = "Kimi 长文本助手",
+                baseUrl = "https://api.moonshot.cn/v1",
+                apiKey = "",
+                model = "moonshot-v1-8k",
+                systemPrompt = "你是擅长总结长邮件与古诗词赏析的轻量助手，回复简明清晰。",
                 enableMcpTools = true
             )
         )
+
+        val DEFAULT_AI_PRESETS = defaultAiApiProfiles().map { it.toAiPreset() }
     }
+
+    fun activeAiProfile(): AiApiProfile =
+        aiProfiles.firstOrNull { it.id == activeAiProfileId } ?: aiProfiles.firstOrNull() ?: defaultAiApiProfiles().first()
+
+    fun motionTier(): PenMotionTier = PenMotionTier.fromId(motionTierId)
 
     fun isAppleLightDesktop(): Boolean = designStyle == STYLE_APPLE_LIGHT
 
@@ -221,13 +335,27 @@ class PenPreferencesRepository(private val context: Context) {
         val BLOCKED_LAUNCHER_PACKAGE = stringPreferencesKey("blocked_launcher_package")
         val BLOCKED_HOME_ACTIVITIES = stringSetPreferencesKey("blocked_home_activities")
 
-        val DARK_WALLPAPER_PRESET = stringPreferencesKey("wallpaper_preset") // keeps backward compat
+        val DARK_WALLPAPER_PRESET = stringPreferencesKey("wallpaper_preset")
         val DARK_CUSTOM_WALLPAPER = stringPreferencesKey("custom_wallpaper_uri")
         val LIGHT_WALLPAPER_PRESET = stringPreferencesKey("light_wallpaper_preset")
         val LIGHT_CUSTOM_WALLPAPER = stringPreferencesKey("light_custom_wallpaper_path")
+        val DYNAMIC_WALLPAPER_MODE = stringPreferencesKey("dynamic_wallpaper_mode")
+        val PROCEDURAL_WALLPAPER_STYLE = stringPreferencesKey("procedural_wallpaper_style")
+        val DYNAMIC_WALLPAPER_MEDIA = stringPreferencesKey("dynamic_wallpaper_media_path")
 
         val CUSTOM_APP_ICONS = stringPreferencesKey("custom_app_icons_kv")
         val CUSTOM_POETRY_FONT_PATH = stringPreferencesKey("custom_poetry_font_path")
+        val TYPOGRAPHY_PROFILE_JSON = stringPreferencesKey("typography_profile_json")
+
+        val MULTI_CLOCK_STYLE = stringPreferencesKey("multi_clock_style")
+        val MULTI_CLOCK_SHAPE = stringPreferencesKey("multi_clock_shape")
+        val MULTI_CLOCK_SECONDS = booleanPreferencesKey("multi_clock_seconds")
+        val MULTI_CLOCK_ACCENT = longPreferencesKey("multi_clock_accent")
+
+        val MOTION_TIER_ID = stringPreferencesKey("motion_tier_id")
+        val SETUP_COMPLETED = booleanPreferencesKey("setup_assistant_completed")
+        val LAN_ADMIN_PORT = intPreferencesKey("lan_admin_port")
+        val LAN_ADMIN_PIN = stringPreferencesKey("lan_admin_pin")
 
         val STANDBY_TIMEOUT_SEC = intPreferencesKey("standby_timeout_sec")
         val STANDBY_BRIGHTNESS = floatPreferencesKey("standby_brightness")
@@ -262,9 +390,14 @@ class PenPreferencesRepository(private val context: Context) {
         val AI_BASE_URL = stringPreferencesKey("ai_base_url")
         val AI_API_KEY = stringPreferencesKey("ai_api_key")
         val AI_MODEL = stringPreferencesKey("ai_model")
-        val AI_PRESETS_ENCODED = stringPreferencesKey("ai_presets_encoded")
-        val ACTIVE_AI_PRESET_ID = stringPreferencesKey("active_ai_preset_id")
+        val AI_PROFILES_JSON = stringPreferencesKey("ai_profiles_json")
+        val ACTIVE_AI_PROFILE_ID = stringPreferencesKey("active_ai_profile_id")
         val EXTERNAL_MCP_URL = stringPreferencesKey("external_mcp_url")
+        val MCP_PREVIEW_BEFORE_APPLY = booleanPreferencesKey("mcp_preview_before_apply")
+        val SWIPE_SENSITIVITY_DP = floatPreferencesKey("swipe_sensitivity_dp")
+        val GESTURE_HAPTICS_ENABLED = booleanPreferencesKey("gesture_haptics_enabled")
+        val MAIL_AUTO_SYNC_ENABLED = booleanPreferencesKey("mail_auto_sync_enabled")
+        val LAST_MAIL_AUTO_SYNC_AT = longPreferencesKey("last_mail_auto_sync_at")
     }
 
     val configFlow: Flow<PenConfig> = context.penDataStore.data.map { prefs ->
@@ -272,17 +405,25 @@ class PenPreferencesRepository(private val context: Context) {
         val widgetsRaw = prefs[Keys.ENABLED_WIDGETS_CSV]
         val nativeIdsRaw = prefs[Keys.NATIVE_WIDGET_IDS].orEmpty()
         val nativeWidthsRaw = prefs[Keys.NATIVE_WIDGET_WIDTHS].orEmpty()
+        val legacyBaseUrl = prefs[Keys.AI_BASE_URL] ?: "https://api.deepseek.com/v1"
+        val legacyApiKey = prefs[Keys.AI_API_KEY].orEmpty()
+        val legacyModel = prefs[Keys.AI_MODEL] ?: "deepseek-chat"
+        val profiles = PenPrefsCodec.decodeAiApiProfiles(
+            prefs[Keys.AI_PROFILES_JSON], legacyBaseUrl, legacyApiKey, legacyModel
+        )
+        val activeProfileId = prefs[Keys.ACTIVE_AI_PROFILE_ID] ?: profiles.first().id
+        val activeProfile = profiles.firstOrNull { it.id == activeProfileId } ?: profiles.first()
+        val legacyPoetryFont = prefs[Keys.CUSTOM_POETRY_FONT_PATH].orEmpty()
+        val typoProfile = PenPrefsCodec.decodeTypographyProfile(
+            prefs[Keys.TYPOGRAPHY_PROFILE_JSON], legacyPoetryFont
+        )
 
         PenConfig(
             designStyle = prefs[Keys.DESIGN_STYLE] ?: PenConfig.STYLE_DARK_STANDBY,
             standByStyleMode = prefs[Keys.STANDBY_STYLE_MODE] ?: PenConfig.STANDBY_STYLE_OLED_DARK,
             hiddenPackages = prefs[Keys.HIDDEN_PACKAGES] ?: emptySet(),
             pinnedDockPackages = if (pinnedRaw.isBlank()) emptyList() else pinnedRaw.split(",").filter { it.isNotBlank() },
-            enabledWidgetIds = if (widgetsRaw == null) {
-                PenConfig.DEFAULT_WIDGET_ORDER
-            } else {
-                widgetsRaw.split(",").filter { it.isNotBlank() }
-            },
+            enabledWidgetIds = if (widgetsRaw == null) PenConfig.DEFAULT_WIDGET_ORDER else widgetsRaw.split(",").filter { it.isNotBlank() },
             desktopDeckMode = prefs[Keys.DESKTOP_DECK_MODE] ?: PenConfig.DECK_MODE_MIXED,
             nativeWidgetIds = nativeIdsRaw.split(",").mapNotNull { it.trim().toIntOrNull() },
             nativeWidgetWidths = decodeIntMap(nativeWidthsRaw),
@@ -294,8 +435,22 @@ class PenPreferencesRepository(private val context: Context) {
             darkCustomWallpaperPath = prefs[Keys.DARK_CUSTOM_WALLPAPER].orEmpty(),
             lightWallpaperPresetId = prefs[Keys.LIGHT_WALLPAPER_PRESET] ?: PenConfig.WALLPAPER_GALLERY_LIGHT,
             lightCustomWallpaperPath = prefs[Keys.LIGHT_CUSTOM_WALLPAPER].orEmpty(),
+            dynamicWallpaperMode = prefs[Keys.DYNAMIC_WALLPAPER_MODE] ?: PenConfig.DYN_WALLPAPER_STATIC,
+            proceduralWallpaperStyle = prefs[Keys.PROCEDURAL_WALLPAPER_STYLE] ?: PenConfig.PROC_AURORA_FLOW,
+            dynamicWallpaperMediaPath = prefs[Keys.DYNAMIC_WALLPAPER_MEDIA].orEmpty(),
             customAppIcons = decodeStringMap(prefs[Keys.CUSTOM_APP_ICONS].orEmpty()),
-            customPoetryFontPath = prefs[Keys.CUSTOM_POETRY_FONT_PATH].orEmpty(),
+            customPoetryFontPath = typoProfile.poetry.externalPath.ifBlank { legacyPoetryFont },
+            typographyProfile = typoProfile,
+            multiClock = MultiClockConfig(
+                style = prefs[Keys.MULTI_CLOCK_STYLE] ?: MultiClockConfig.STYLE_BLOOM_ANALOG,
+                shape = prefs[Keys.MULTI_CLOCK_SHAPE] ?: MultiClockConfig.SHAPE_SCALLOP,
+                showSeconds = prefs[Keys.MULTI_CLOCK_SECONDS] ?: true,
+                accentHex = prefs[Keys.MULTI_CLOCK_ACCENT] ?: 0xFFFF6B4AL
+            ),
+            motionTierId = prefs[Keys.MOTION_TIER_ID] ?: PenMotionTier.FAST.id,
+            setupAssistantCompleted = prefs[Keys.SETUP_COMPLETED] ?: false,
+            lanAdminPort = prefs[Keys.LAN_ADMIN_PORT] ?: 8765,
+            lanAdminPin = prefs[Keys.LAN_ADMIN_PIN].orEmpty(),
             standByTimeoutSec = prefs[Keys.STANDBY_TIMEOUT_SEC] ?: 30,
             standByBrightness = prefs[Keys.STANDBY_BRIGHTNESS] ?: 0.08f,
             standByRightWidget = prefs[Keys.STANDBY_RIGHT_WIDGET] ?: PenConfig.STANDBY_WIDGET_POETRY,
@@ -322,16 +477,117 @@ class PenPreferencesRepository(private val context: Context) {
             webDavUser = prefs[Keys.WEBDAV_USER].orEmpty(),
             webDavPass = prefs[Keys.WEBDAV_PASS].orEmpty(),
             lastSyncTime = prefs[Keys.LAST_SYNC_TIME] ?: 0L,
-            aiBaseUrl = prefs[Keys.AI_BASE_URL] ?: "https://api.deepseek.com/v1",
-            aiApiKey = prefs[Keys.AI_API_KEY].orEmpty(),
-            aiModel = prefs[Keys.AI_MODEL] ?: "deepseek-chat",
-            aiPresets = decodeAiPresets(prefs[Keys.AI_PRESETS_ENCODED]),
-            activeAiPresetId = prefs[Keys.ACTIVE_AI_PRESET_ID] ?: "penos_mcp",
-            externalMcpUrl = prefs[Keys.EXTERNAL_MCP_URL].orEmpty()
+            aiBaseUrl = activeProfile.baseUrl,
+            aiApiKey = activeProfile.apiKey,
+            aiModel = activeProfile.model,
+            aiProfiles = profiles,
+            activeAiProfileId = activeProfile.id,
+            aiPresets = profiles.map { it.toAiPreset() },
+            activeAiPresetId = activeProfile.id,
+            externalMcpUrl = prefs[Keys.EXTERNAL_MCP_URL].orEmpty(),
+            mcpPreviewBeforeApply = prefs[Keys.MCP_PREVIEW_BEFORE_APPLY] ?: true,
+            swipeSensitivityDp = (prefs[Keys.SWIPE_SENSITIVITY_DP] ?: 34f).coerceIn(20f, 72f),
+            gestureHapticsEnabled = prefs[Keys.GESTURE_HAPTICS_ENABLED] ?: true,
+            mailAutoSyncEnabled = prefs[Keys.MAIL_AUTO_SYNC_ENABLED] ?: true,
+            lastMailAutoSyncAt = prefs[Keys.LAST_MAIL_AUTO_SYNC_AT] ?: 0L
         )
     }
 
     suspend fun currentConfig(): PenConfig = configFlow.first()
+
+    suspend fun ensureLanAdminPin(): String {
+        val existing = currentConfig().lanAdminPin
+        if (existing.length == 6 && existing.all { it.isDigit() }) return existing
+        return regenerateLanAdminPin()
+    }
+
+    suspend fun regenerateLanAdminPin(): String {
+        val randomPin = "%06d".format(SecureRandom().nextInt(1_000_000))
+        context.penDataStore.edit { it[Keys.LAN_ADMIN_PIN] = randomPin }
+        return randomPin
+    }
+
+    suspend fun setLanAdminPin(pin: String) {
+        val clean = pin.filter { it.isDigit() }.take(8)
+        if (clean.length >= 4) {
+            context.penDataStore.edit { it[Keys.LAN_ADMIN_PIN] = clean }
+        }
+    }
+
+    suspend fun setSetupAssistantCompleted(completed: Boolean) {
+        context.penDataStore.edit { it[Keys.SETUP_COMPLETED] = completed }
+    }
+
+    suspend fun setMotionTier(tierId: String) {
+        context.penDataStore.edit { it[Keys.MOTION_TIER_ID] = PenMotionTier.fromId(tierId).id }
+    }
+
+    suspend fun setMcpPreviewBeforeApply(enabled: Boolean) {
+        context.penDataStore.edit { it[Keys.MCP_PREVIEW_BEFORE_APPLY] = enabled }
+    }
+
+    suspend fun setSwipeSensitivityDp(dp: Float) {
+        context.penDataStore.edit { it[Keys.SWIPE_SENSITIVITY_DP] = dp.coerceIn(20f, 72f) }
+    }
+
+    suspend fun setGestureHapticsEnabled(enabled: Boolean) {
+        context.penDataStore.edit { it[Keys.GESTURE_HAPTICS_ENABLED] = enabled }
+    }
+
+    suspend fun setMailAutoSyncEnabled(enabled: Boolean) {
+        context.penDataStore.edit { it[Keys.MAIL_AUTO_SYNC_ENABLED] = enabled }
+    }
+
+    suspend fun setLastMailAutoSyncAt(timestampMs: Long) {
+        context.penDataStore.edit { it[Keys.LAST_MAIL_AUTO_SYNC_AT] = timestampMs }
+    }
+
+    suspend fun setDynamicWallpaperConfig(
+        mode: String? = null,
+        proceduralStyle: String? = null,
+        mediaPath: String? = null
+    ) {
+        context.penDataStore.edit { prefs ->
+            mode?.let { prefs[Keys.DYNAMIC_WALLPAPER_MODE] = it }
+            proceduralStyle?.let { prefs[Keys.PROCEDURAL_WALLPAPER_STYLE] = it }
+            mediaPath?.let { prefs[Keys.DYNAMIC_WALLPAPER_MEDIA] = it }
+        }
+    }
+
+    suspend fun updateFontSlot(slot: String, spec: FontSlotSpec) {
+        context.penDataStore.edit { prefs ->
+            val current = PenPrefsCodec.decodeTypographyProfile(
+                prefs[Keys.TYPOGRAPHY_PROFILE_JSON],
+                prefs[Keys.CUSTOM_POETRY_FONT_PATH].orEmpty()
+            )
+            val updated = current.withUpdatedSlot(slot, spec)
+            prefs[Keys.TYPOGRAPHY_PROFILE_JSON] = PenPrefsCodec.encodeTypographyProfile(updated)
+            if (slot == GranularTypographyProfile.SLOT_POETRY) {
+                prefs[Keys.CUSTOM_POETRY_FONT_PATH] = spec.externalPath
+            }
+        }
+    }
+
+    suspend fun resetTypographyProfile() {
+        context.penDataStore.edit { prefs ->
+            prefs[Keys.TYPOGRAPHY_PROFILE_JSON] = PenPrefsCodec.encodeTypographyProfile(GranularTypographyProfile())
+            prefs[Keys.CUSTOM_POETRY_FONT_PATH] = ""
+        }
+    }
+
+    suspend fun setMultiClockConfig(
+        style: String? = null,
+        shape: String? = null,
+        showSeconds: Boolean? = null,
+        accentHex: Long? = null
+    ) {
+        context.penDataStore.edit { prefs ->
+            style?.let { prefs[Keys.MULTI_CLOCK_STYLE] = it }
+            shape?.let { prefs[Keys.MULTI_CLOCK_SHAPE] = it }
+            showSeconds?.let { prefs[Keys.MULTI_CLOCK_SECONDS] = it }
+            accentHex?.let { prefs[Keys.MULTI_CLOCK_ACCENT] = it }
+        }
+    }
 
     suspend fun setDesignStyle(style: String) {
         context.penDataStore.edit { it[Keys.DESIGN_STYLE] = style }
@@ -389,9 +645,7 @@ class PenPreferencesRepository(private val context: Context) {
     suspend fun saveWeatherCityToFavorites(city: SavedCityEntry) {
         context.penDataStore.edit { prefs ->
             val current = decodeSavedCities(prefs[Keys.SAVED_WEATHER_CITIES]).toMutableList()
-            if (current.none { it.name == city.name }) {
-                current.add(0, city)
-            }
+            if (current.none { it.name == city.name }) current.add(0, city)
             prefs[Keys.SAVED_WEATHER_CITIES] = encodeSavedCities(current.take(16))
         }
     }
@@ -399,9 +653,7 @@ class PenPreferencesRepository(private val context: Context) {
     suspend fun removeWeatherCityFromFavorites(cityName: String) {
         context.penDataStore.edit { prefs ->
             val current = decodeSavedCities(prefs[Keys.SAVED_WEATHER_CITIES]).filter { it.name != cityName }
-            if (current.isNotEmpty()) {
-                prefs[Keys.SAVED_WEATHER_CITIES] = encodeSavedCities(current)
-            }
+            if (current.isNotEmpty()) prefs[Keys.SAVED_WEATHER_CITIES] = encodeSavedCities(current)
         }
     }
 
@@ -436,9 +688,8 @@ class PenPreferencesRepository(private val context: Context) {
         context.penDataStore.edit { prefs ->
             val current = prefs[Keys.PINNED_DOCK_CSV].orEmpty()
                 .split(",").filter { it.isNotBlank() }.toMutableList()
-            if (current.contains(packageName)) {
-                current.remove(packageName)
-            } else {
+            if (current.contains(packageName)) current.remove(packageName)
+            else {
                 if (current.size >= 8) current.removeAt(0)
                 current.add(packageName)
             }
@@ -504,7 +755,14 @@ class PenPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setCustomPoetryFontPath(path: String) {
-        context.penDataStore.edit { it[Keys.CUSTOM_POETRY_FONT_PATH] = path.trim() }
+        val cur = currentConfig().typographyProfile.poetry
+        updateFontSlot(
+            GranularTypographyProfile.SLOT_POETRY,
+            cur.copy(
+                familyKey = if (path.isBlank()) "noto_serif_sc" else "external",
+                externalPath = path.trim()
+            )
+        )
     }
 
     suspend fun setStandByConfig(
@@ -574,38 +832,74 @@ class PenPreferencesRepository(private val context: Context) {
     }
 
     suspend fun saveAiConfig(baseUrl: String, apiKey: String, model: String, externalMcpUrl: String) {
-        context.penDataStore.edit {
-            it[Keys.AI_BASE_URL] = baseUrl.trim()
-            it[Keys.AI_API_KEY] = apiKey.trim()
-            it[Keys.AI_MODEL] = model.trim()
-            it[Keys.EXTERNAL_MCP_URL] = externalMcpUrl.trim()
+        val current = currentConfig()
+        val active = current.activeAiProfile().copy(
+            baseUrl = baseUrl.trim(),
+            apiKey = apiKey.trim(),
+            model = model.trim()
+        )
+        upsertAiApiProfile(active)
+        context.penDataStore.edit { it[Keys.EXTERNAL_MCP_URL] = externalMcpUrl.trim() }
+    }
+
+    suspend fun saveExternalMcpUrl(url: String) {
+        context.penDataStore.edit { it[Keys.EXTERNAL_MCP_URL] = url.trim() }
+    }
+
+    suspend fun setActiveAiProfile(profileId: String) {
+        context.penDataStore.edit { it[Keys.ACTIVE_AI_PROFILE_ID] = profileId }
+    }
+
+    suspend fun upsertAiApiProfile(profile: AiApiProfile) {
+        context.penDataStore.edit { prefs ->
+            val current = PenPrefsCodec.decodeAiApiProfiles(
+                prefs[Keys.AI_PROFILES_JSON],
+                prefs[Keys.AI_BASE_URL] ?: "https://api.deepseek.com/v1",
+                prefs[Keys.AI_API_KEY].orEmpty(),
+                prefs[Keys.AI_MODEL] ?: "deepseek-chat"
+            ).toMutableList()
+            val idx = current.indexOfFirst { it.id == profile.id }
+            if (idx >= 0) current[idx] = profile else current.add(profile)
+            prefs[Keys.AI_PROFILES_JSON] = PenPrefsCodec.encodeAiApiProfiles(current)
+            prefs[Keys.ACTIVE_AI_PROFILE_ID] = profile.id
+            prefs[Keys.AI_BASE_URL] = profile.baseUrl
+            prefs[Keys.AI_API_KEY] = profile.apiKey
+            prefs[Keys.AI_MODEL] = profile.model
         }
     }
 
-    suspend fun setActiveAiPreset(presetId: String) {
-        context.penDataStore.edit { it[Keys.ACTIVE_AI_PRESET_ID] = presetId }
-    }
-
-    suspend fun upsertAiPreset(preset: AiPreset) {
+    suspend fun deleteAiApiProfile(profileId: String) {
         context.penDataStore.edit { prefs ->
-            val list = decodeAiPresets(prefs[Keys.AI_PRESETS_ENCODED]).toMutableList()
-            val idx = list.indexOfFirst { it.id == preset.id }
-            if (idx >= 0) list[idx] = preset else list.add(preset)
-            prefs[Keys.AI_PRESETS_ENCODED] = encodeAiPresets(list)
-            prefs[Keys.ACTIVE_AI_PRESET_ID] = preset.id
-        }
-    }
-
-    suspend fun deleteAiPreset(presetId: String) {
-        context.penDataStore.edit { prefs ->
-            val list = decodeAiPresets(prefs[Keys.AI_PRESETS_ENCODED]).filter { it.id != presetId }
-            val safe = list.ifEmpty { PenConfig.DEFAULT_AI_PRESETS }
-            prefs[Keys.AI_PRESETS_ENCODED] = encodeAiPresets(safe)
-            if (prefs[Keys.ACTIVE_AI_PRESET_ID] == presetId) {
-                prefs[Keys.ACTIVE_AI_PRESET_ID] = safe.first().id
+            val current = PenPrefsCodec.decodeAiApiProfiles(
+                prefs[Keys.AI_PROFILES_JSON],
+                prefs[Keys.AI_BASE_URL] ?: "https://api.deepseek.com/v1",
+                prefs[Keys.AI_API_KEY].orEmpty(),
+                prefs[Keys.AI_MODEL] ?: "deepseek-chat"
+            ).filter { it.id != profileId }
+            val safe = current.ifEmpty { PenConfig.defaultAiApiProfiles() }
+            prefs[Keys.AI_PROFILES_JSON] = PenPrefsCodec.encodeAiApiProfiles(safe)
+            if (prefs[Keys.ACTIVE_AI_PROFILE_ID] == profileId) {
+                prefs[Keys.ACTIVE_AI_PROFILE_ID] = safe.first().id
             }
         }
     }
+
+    suspend fun setActiveAiPreset(presetId: String) = setActiveAiProfile(presetId)
+
+    suspend fun upsertAiPreset(preset: AiPreset) {
+        val current = currentConfig()
+        val existing = current.aiProfiles.firstOrNull { it.id == preset.id } ?: current.activeAiProfile()
+        upsertAiApiProfile(
+            existing.copy(
+                id = preset.id,
+                name = preset.name,
+                systemPrompt = preset.systemPrompt,
+                enableMcpTools = preset.enableMcpTools
+            )
+        )
+    }
+
+    suspend fun deleteAiPreset(presetId: String) = deleteAiApiProfile(presetId)
 
     private fun encodeStringMap(map: Map<String, String>): String =
         map.entries.joinToString("\n") { "${it.key}=${it.value}" }
@@ -647,26 +941,5 @@ class PenPreferencesRepository(private val context: Context) {
             } else null
         }
         return parsed.ifEmpty { PenConfig.DEFAULT_SAVED_CITIES }
-    }
-
-    private fun encodeAiPresets(list: List<AiPreset>): String =
-        list.joinToString("\u001E") { preset ->
-            listOf(
-                preset.id.replace("\u001F", ""),
-                preset.name.replace("\u001F", ""),
-                preset.systemPrompt.replace("\u001F", " "),
-                if (preset.enableMcpTools) "1" else "0"
-            ).joinToString("\u001F")
-        }
-
-    private fun decodeAiPresets(raw: String?): List<AiPreset> {
-        if (raw.isNullOrBlank()) return PenConfig.DEFAULT_AI_PRESETS
-        val parsed = raw.split("\u001E").mapNotNull { entry ->
-            val p = entry.split("\u001F")
-            if (p.size >= 4) {
-                AiPreset(p[0], p[1], p[2], p[3] == "1")
-            } else null
-        }
-        return parsed.ifEmpty { PenConfig.DEFAULT_AI_PRESETS }
     }
 }

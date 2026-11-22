@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,7 +66,8 @@ internal fun TakeoverAndScanTab(
     onRootDisableHomeComponent: (String) -> Unit,
     onRootFreezeStock: (Boolean) -> Unit,
     onRefreshDiagnostics: () -> Unit,
-    onOpenLabRadar: () -> Unit
+    onOpenLabRadar: () -> Unit,
+    onToggleStockHomeBypass60s: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val colors = PenTheme.colors
@@ -113,6 +115,33 @@ internal fun TakeoverAndScanTab(
                         .padding(horizontal = 6.dp)
                 )
             }
+        }
+
+        // PenOS 5.0: 60-Second Temporary Stock Home Bypass (for stock settings / OTA updates)
+        val bypassSec = state.stockHomeBypassRemainingSec
+        val bypassActive = bypassSec > 0
+        Button(
+            onClick = onToggleStockHomeBypass60s,
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (bypassActive) colors.dangerRose else colors.standByAmber.copy(alpha = 0.92f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(34.dp)
+                .testTag("vault_stock_home_bypass_btn")
+        ) {
+            Text(
+                text = if (bypassActive) {
+                    "已临时放行原厂桌面：剩余 ${bypassSec}s（点此立即恢复防锁拦截）"
+                } else {
+                    "临时放行原厂桌面 60 秒（用于进原厂调系统设置/升级）"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (bypassActive) Color.White else Color(0xFF1A1405),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
         // Jiuxuewang Component-Level Binding Banner

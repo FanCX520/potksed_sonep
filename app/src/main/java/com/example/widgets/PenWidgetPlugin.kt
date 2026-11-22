@@ -21,7 +21,9 @@ data class WidgetActionBridge(
     val onRefreshWeather: () -> Unit,
     val onOpenCalendar: () -> Unit,
     val onOpenTodo: () -> Unit,
-    val onToggleTodoDone: (TodoItemEntity) -> Unit
+    val onToggleTodoDone: (TodoItemEntity) -> Unit,
+    val onOpenMail: () -> Unit = {},
+    val onCycleClockStyle: () -> Unit = {}
 )
 
 interface PenWidgetPlugin {
@@ -42,7 +44,9 @@ interface PenWidgetPlugin {
 object WidgetRegistry {
     val allPlugins: List<PenWidgetPlugin> = listOf(
         QuickScanWidgetPlugin,
+        MultiStyleClockWidgetPlugin,
         WeatherWidgetPlugin,
+        MailInboxWidgetPlugin,
         CalendarWidgetPlugin,
         TodoWidgetPlugin,
         JinrishiciWidgetPlugin,
@@ -55,6 +59,6 @@ object WidgetRegistry {
 
     fun resolveEnabled(enabledIds: List<String>): List<PenWidgetPlugin> {
         val resolved = enabledIds.mapNotNull { pluginMap[it] }
-        return resolved.ifEmpty { listOf(QuickScanWidgetPlugin, WeatherWidgetPlugin, CalendarWidgetPlugin) }
+        return resolved.ifEmpty { listOf(QuickScanWidgetPlugin, MultiStyleClockWidgetPlugin, WeatherWidgetPlugin) }
     }
 }

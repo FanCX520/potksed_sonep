@@ -33,6 +33,7 @@ object AntiLockCoordinator {
 
     private val blockedLauncherPackage = AtomicReference("")
     private val blockedHomeActivities = AtomicReference<Set<String>>(emptySet())
+    private val stockHomeBypassUntilMs = AtomicLong(0L)
 
     private val _radarLog = MutableStateFlow<List<WindowRadarEntry>>(emptyList())
     val radarLog: StateFlow<List<WindowRadarEntry>> = _radarLog.asStateFlow()
@@ -79,6 +80,26 @@ object AntiLockCoordinator {
         allowedUntilElapsedMs.set(0L)
     }
 
+    /**
+     * PenOS 5.0 Vault 60-second temporary pass so the user can enter stock Jiuxuewang Home
+     * to adjust system settings or update dictionaries, automatically re-arming afterwards.
+     */
+    fun grantStockHomeBypass(durationMs: Long = 60_000L) {
+        stockHomeBypassUntilMs.set(System.currentTimeMillis() + durationMs.coerceIn(5_000L, 300_000L))
+    }
+
+    fun revokeStockHomeBypass() {
+        stockHomeBypassUntilMs.set(0L)
+    }
+
+    fun remainingStockHomeBypassSec(nowMs: Long = System.currentTimeMillis()): Int {
+        val rem = stockHomeBypassUntilMs.get() - nowMs
+        return if (rem <= 0L) 0 else ((rem + 999L) / 1000L).toInt()
+    }
+
+    fun isStockHomeBypassActive(nowMs: Long = System.currentTimeMillis()): Boolean =
+        nowMs < stockHomeBypassUntilMs.get()
+
     fun recordWindowEvent(packageName: String, className: String, intercepted: Boolean) {
         if (packageName.isBlank()) return
         val normalized = normalizeClassName(packageName, className)
@@ -105,6 +126,7 @@ object AntiLockCoordinator {
         selfPackage: String
     ): Boolean {
         if (foregroundPackage.isBlank() || foregroundPackage == selfPackage) return false
+        if (isStockHomeBypassActive()) return false
         val normClass = normalizeClassName(foregroundPackage, foregroundClass)
         val flat = "$foregroundPackage/$normClass"
 

@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import com.example.data.prefs.AiApiProfile
 import com.example.data.prefs.AiPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,17 +31,20 @@ data class PenMcpToolResult(
 )
 
 /**
- * China ICP-filed OpenAI-compatible AI + Built-in PenOS Desktop MCP Tool Bridge + External HTTP MCP Client.
- * Fully compatible with Android 5.0.2 (API 21 TLS 1.2) and campus ICP-only firewalls.
+ * PenOS 4.0 DeepSeek Harness-Grade Full-Control MCP Client.
+ * Supports multi-round tool loops (inspect -> plan -> mutate -> verify), 22 built-in PenOS Harness tools
+ * (declarative custom widget creation, 5-slot global typography, 4-mode dynamic wallpapers, 6-style clock,
+ * Apple TV drawer management, multi-AI profile switching, email read/summarize/draft, productivity),
+ * plus external HTTP JSON-RPC MCP servers.
  */
 class PenAiMcpClient {
 
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-        // All default templates are China ICP-filed AI platforms accessible inside school networks
         val icpProviderTemplates: List<AiProviderTemplate> = listOf(
-            AiProviderTemplate("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "深度求索 · 国内备案"),
+            AiProviderTemplate("DeepSeek V3", "https://api.deepseek.com/v1", "deepseek-chat", "深度求索 · 推荐 Harness"),
+            AiProviderTemplate("DeepSeek R1", "https://api.deepseek.com/v1", "deepseek-reasoner", "深度推理 · 国内备案"),
             AiProviderTemplate("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "智谱清言 · 免费额度"),
             AiProviderTemplate("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo", "阿里云百炼 · 国内备案"),
             AiProviderTemplate("硅基流动", "https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-7B-Instruct", "SiliconFlow · 国内备案"),
@@ -49,15 +53,27 @@ class PenAiMcpClient {
     }
 
     private val client by lazy {
-        Api21NetworkFactory.createClient(connectTimeoutSec = 15, readTimeoutSec = 45)
+        Api21NetworkFactory.createClient(connectTimeoutSec = 15, readTimeoutSec = 55)
     }
 
-    /**
-     * Sends a conversation turn to any ICP-filed OpenAI-compatible endpoint.
-     * When MCP tools are enabled on the active preset, registers all built-in PenOS Desktop MCP tools
-     * (plus any discovered tools from externalMcpUrl), executes tool calls locally/remotely, and returns
-     * the final assistant message along with executed tool badges.
-     */
+    suspend fun sendChatWithMcp(
+        profile: AiApiProfile,
+        history: List<AiChatMessage>,
+        userPrompt: String,
+        externalMcpUrl: String,
+        desktopToolExecutor: suspend (toolName: String, args: JSONObject) -> PenMcpToolResult
+    ): Result<AiChatMessage> = sendChatWithMcp(
+        baseUrl = profile.baseUrl,
+        apiKey = profile.apiKey,
+        model = profile.model,
+        preset = profile.toAiPreset(),
+        history = history,
+        userPrompt = userPrompt,
+        externalMcpUrl = externalMcpUrl,
+        temperature = profile.temperature,
+        desktopToolExecutor = desktopToolExecutor
+    )
+
     suspend fun sendChatWithMcp(
         baseUrl: String,
         apiKey: String,
@@ -66,18 +82,19 @@ class PenAiMcpClient {
         history: List<AiChatMessage>,
         userPrompt: String,
         externalMcpUrl: String,
+        temperature: Float = 0.6f,
         desktopToolExecutor: suspend (toolName: String, args: JSONObject) -> PenMcpToolResult
     ): Result<AiChatMessage> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanBase = baseUrl.trim().trimEnd('/')
-            if (cleanBase.isBlank()) throw IllegalArgumentException("请先在实验室填写国内已备案的 AI 接口地址")
-            if (apiKey.isBlank()) throw IllegalArgumentException("请先在实验室配置您的 API Key（仅保存在笔端本地）")
+            if (cleanBase.isBlank()) throw IllegalArgumentException("请先在实验室或局域网后台填写 AI 接口地址")
+            if (apiKey.isBlank()) throw IllegalArgumentException("请先配置当前模型预设的 API Key（仅存本地）")
 
             val endpoint = if (cleanBase.endsWith("/chat/completions")) cleanBase else "$cleanBase/chat/completions"
 
             val messages = JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", preset.systemPrompt))
-                history.takeLast(8).forEach { msg ->
+                history.takeLast(10).forEach { msg ->
                     if (msg.role == "user" || msg.role == "assistant") {
                         put(JSONObject().put("role", msg.role).put("content", msg.content))
                     }
@@ -94,15 +111,15 @@ class PenAiMcpClient {
             val toolsPayload = if (preset.enableMcpTools) buildCombinedToolsSchema(externalTools) else null
 
             val executedLogs = mutableListOf<String>()
-
-            // Round 1 (and Round 2 if model requested MCP tool calls)
             var finalAssistantText = ""
-            for (round in 0 until 2) {
+
+            // DeepSeek Harness multi-round agentic tool loop (up to 4 rounds: inspect -> create -> configure -> confirm)
+            for (round in 0 until 4) {
                 val reqObj = JSONObject().apply {
                     put("model", model.ifBlank { "deepseek-chat" })
                     put("messages", messages)
-                    put("temperature", 0.6)
-                    if (toolsPayload != null && round == 0) {
+                    put("temperature", temperature.toDouble().coerceIn(0.0, 1.5))
+                    if (toolsPayload != null && round < 3) {
                         put("tools", toolsPayload)
                         put("tool_choice", "auto")
                     }
@@ -115,11 +132,11 @@ class PenAiMcpClient {
                 val assistantMsg = choices.getJSONObject(0).getJSONObject("message")
                 val toolCalls = assistantMsg.optJSONArray("tool_calls")
 
-                if (toolCalls != null && toolCalls.length() > 0 && round == 0) {
+                if (toolCalls != null && toolCalls.length() > 0 && round < 3) {
                     messages.put(assistantMsg)
                     for (i in 0 until toolCalls.length()) {
                         val call = toolCalls.getJSONObject(i)
-                        val callId = call.optString("id", "call_$i")
+                        val callId = call.optString("id", "call_${round}_$i")
                         val fn = call.getJSONObject("function")
                         val fnName = fn.optString("name")
                         val argsStr = fn.optString("arguments", "{}")
@@ -148,7 +165,7 @@ class PenAiMcpClient {
             }
 
             if (finalAssistantText.isBlank() && executedLogs.isNotEmpty()) {
-                finalAssistantText = "已通过 MCP 工具完成操作：\n${executedLogs.joinToString("\n")}"
+                finalAssistantText = "已通过 PenOS Harness MCP 完成以下变更：\n${executedLogs.joinToString("\n")}"
             }
             if (finalAssistantText.isBlank()) {
                 finalAssistantText = "已收到指令，但模型未返回文字内容。"
@@ -160,6 +177,37 @@ class PenAiMcpClient {
                 content = finalAssistantText,
                 toolActionsSummary = executedLogs.joinToString(" · ")
             )
+        }
+    }
+
+    suspend fun sendQuickTextPrompt(
+        profile: AiApiProfile,
+        systemPrompt: String,
+        userPrompt: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanBase = profile.baseUrl.trim().trimEnd('/')
+            if (cleanBase.isBlank() || profile.apiKey.isBlank()) {
+                throw IllegalArgumentException("请先配置当前 AI 模型预设的 API Key")
+            }
+            val endpoint = if (cleanBase.endsWith("/chat/completions")) cleanBase else "$cleanBase/chat/completions"
+            val req = JSONObject()
+                .put("model", profile.model.ifBlank { "deepseek-chat" })
+                .put("temperature", 0.4)
+                .put(
+                    "messages",
+                    JSONArray()
+                        .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                        .put(JSONObject().put("role", "user").put("content", userPrompt))
+                )
+            val resp = postJson(endpoint, req, profile.apiKey)
+            resp.optJSONArray("choices")
+                ?.optJSONObject(0)
+                ?.optJSONObject("message")
+                ?.optString("content")
+                .orEmpty()
+                .trim()
+                .ifBlank { "模型未返回内容" }
         }
     }
 
@@ -256,21 +304,100 @@ class PenAiMcpClient {
             )
         }
 
+        // 1. Harness Introspection
         addTool(
-            "switch_theme",
-            "切换 PenOS 桌面主题或 StandBy 息屏主题",
+            "inspect_penos_state",
+            "读取 PenOS 当前完整桌面状态（主题、壁纸模式、5通道字体、多样式时钟、现有自定义小组件、Apple TV抽屉内容、已安装应用、未读邮件数）以便精准修改",
             JSONObject()
-                .put("desktop_style", JSONObject().put("type", "string").put("description", "dark_standby 或 apple_light"))
-                .put("standby_style", JSONObject().put("type", "string").put("description", "可选：follow / oled_dark / apple_light")),
-            listOf("desktop_style")
+        )
+
+        // 2. Declarative Custom Widget Authoring (Harness Killer Feature!)
+        addTool(
+            "create_custom_widget",
+            "编写并立即安装/更新一个 PenOS 5.0 声明式自定义小组件到主屏或 Apple TV 上滑抽屉。blocks 数组支持 17 类声明式组件块: header(title,badge), metric(label,value,unit), text(content), progress(label,percent), countdown(label,target_iso如2027-06-07), checklist(items数组[{text,done}]), quote(content,author), sparkline(label,values数值数组), action_button(label,action,target), stopwatch(label), habit_counter(label,value,goal,unit), mood_picker(label,options数组,selected), calc_pad(label), http_json(label,url仅http/https,json_path,unit), macro_button(label,steps数组如[\"night_eye_on\",\"white_noise:rain\",\"pomodoro:45\"]), timetable(title,slots数组[{time:\"08:00-09:30\",name:\"英语\"}]), flashcard_mini(front,back,tag)",
+            JSONObject()
+                .put("id", JSONObject().put("type", "string").put("description", "唯一ID，如 gaokao_countdown；相同ID则覆盖更新"))
+                .put("title", JSONObject().put("type", "string").put("description", "小组件标题"))
+                .put("placement", JSONObject().put("type", "string").put("description", "DESKTOP / DRAWER / BOTH，默认 BOTH"))
+                .put("width_dp", JSONObject().put("type", "integer").put("description", "宽度 150~280，默认 196"))
+                .put("accent_hex", JSONObject().put("type", "string").put("description", "十六进制强调色如 #38BDF8 或 #FF6B4A"))
+                .put("blocks", JSONObject().put("type", "array").put("items", JSONObject().put("type", "object")).put("description", "声明式内容块数组（最多8块，优先精简适配172dp高横屏）")),
+            listOf("title", "blocks")
         )
         addTool(
-            "manage_widgets",
-            "开启或关闭 PenOS 桌面小组件",
+            "delete_custom_widget",
+            "删除指定 ID 的自定义 MCP 小组件",
+            JSONObject().put("id", JSONObject().put("type", "string")),
+            listOf("id")
+        )
+
+        // 3. Apple TV Up-Swipe Drawer Management
+        addTool(
+            "manage_drawer",
+            "管理主屏上滑呼出的 Apple TV 风格自定义抽屉内容（添加/移除自定义小组件、时钟、邮箱、AI切换卡或快捷动作）",
             JSONObject()
-                .put("widget_id", JSONObject().put("type", "string").put("description", "quick_scan, weather, calendar, todo, jinrishici, vocab_card, pinned_apps, pen_status"))
+                .put("action", JSONObject().put("type", "string").put("description", "add 或 remove"))
+                .put("type", JSONObject().put("type", "string").put("description", "CUSTOM_WIDGET / BUILTIN_CLOCK / BUILTIN_MAIL / AI_SWITCHER / APP_SHORTCUT / ACTION_TILE"))
+                .put("ref_id", JSONObject().put("type", "string").put("description", "自定义组件ID、应用包名或动作名"))
+                .put("title", JSONObject().put("type", "string")),
+            listOf("action", "type", "ref_id")
+        )
+
+        // 4. Granular 5-Slot Global Typography
+        addTool(
+            "set_font_slot",
+            "精细调整 PenOS 5 通道全局动态字体之一（时钟/标题/正文/诗词/徽章）的字体族、缩放倍率、字重与字距",
+            JSONObject()
+                .put("slot", JSONObject().put("type", "string").put("description", "clock / title / body / poetry / metric"))
+                .put("family", JSONObject().put("type", "string").put("description", "outfit / inter / space_grotesk / jetbrains_mono / noto_serif_sc / playfair / system_sans / system_serif"))
+                .put("scale", JSONObject().put("type", "number").put("description", "0.75 到 1.45"))
+                .put("weight", JSONObject().put("type", "integer").put("description", "300 到 800"))
+                .put("letter_spacing", JSONObject().put("type", "number").put("description", "-2.0 到 3.0")),
+            listOf("slot")
+        )
+
+        // 5. 4-Mode Dynamic Wallpaper & Theme & Multi-Style Clock & Motion Tier
+        addTool(
+            "switch_theme",
+            "切换 PenOS 桌面主题、StandBy 主题或动画流畅度档位",
+            JSONObject()
+                .put("desktop_style", JSONObject().put("type", "string").put("description", "dark_standby 或 apple_light"))
+                .put("standby_style", JSONObject().put("type", "string").put("description", "follow / oled_dark / apple_light"))
+                .put("motion_tier", JSONObject().put("type", "string").put("description", "fast(极速流畅) / spring(轻盈弹簧) / none(零动效)"))
+        )
+        addTool(
+            "set_wallpaper_mode",
+            "切换动态壁纸模式（static静态 / procedural代码动效 / gif / mp4 / live系统原生动态壁纸）与代码动效样式",
+            JSONObject()
+                .put("mode", JSONObject().put("type", "string").put("description", "static / procedural / gif / mp4 / live"))
+                .put("procedural_style", JSONObject().put("type", "string").put("description", "aurora_flow / star_trails / soft_rain / gallery_breeze"))
+                .put("media_path", JSONObject().put("type", "string").put("description", "可选本地 GIF/MP4 路径")),
+            listOf("mode")
+        )
+        addTool(
+            "set_clock_widget_style",
+            "切换多样式时钟小组件表盘样式（M3花瓣/瑞士铁路/复古翻页/KDE极简/罗马经典/点阵LED）",
+            JSONObject()
+                .put("style", JSONObject().put("type", "string").put("description", "bloom_analog / railway_swiss / retro_flip / kde_minimal / roman_classic / dot_matrix"))
+                .put("shape", JSONObject().put("type", "string").put("description", "circle / squircle / scallop / pill"))
+                .put("show_seconds", JSONObject().put("type", "boolean")),
+            listOf("style")
+        )
+
+        // 6. Built-in Widgets, Productivity, Device & Multi-AI Switcher
+        addTool(
+            "manage_widgets",
+            "开启或关闭 PenOS 内置桌面小组件",
+            JSONObject()
+                .put("widget_id", JSONObject().put("type", "string").put("description", "quick_scan, multi_clock, weather, mail_inbox, calendar, todo, jinrishici, vocab_card, pinned_apps, pen_status"))
                 .put("enable", JSONObject().put("type", "boolean")),
             listOf("widget_id", "enable")
+        )
+        addTool(
+            "switch_ai_profile",
+            "切换到已保存的其他 AI API 模型预设",
+            JSONObject().put("profile_name_or_id", JSONObject().put("type", "string")),
+            listOf("profile_name_or_id")
         )
         addTool(
             "add_todo",
@@ -292,13 +419,13 @@ class PenAiMcpClient {
         addTool(
             "switch_weather_city",
             "切换 PenOS 天气小组件显示的城市",
-            JSONObject().put("city_name", JSONObject().put("type", "string").put("description", "中国城市名如 北京/上海/南京/成都")),
+            JSONObject().put("city_name", JSONObject().put("type", "string")),
             listOf("city_name")
         )
         addTool(
             "start_pomodoro",
             "启动全屏壁纸番茄专注倒计时模式",
-            JSONObject().put("minutes", JSONObject().put("type", "integer").put("description", "专注分钟数，如 15/25/45")),
+            JSONObject().put("minutes", JSONObject().put("type", "integer")),
             listOf("minutes")
         )
         addTool(
@@ -313,13 +440,13 @@ class PenAiMcpClient {
             "adjust_device",
             "调节词典笔屏幕亮度、媒体音量或夜间护眼遮罩",
             JSONObject()
-                .put("brightness_percent", JSONObject().put("type", "integer").put("description", "10 到 100"))
-                .put("volume_percent", JSONObject().put("type", "integer").put("description", "0 到 100"))
+                .put("brightness_percent", JSONObject().put("type", "integer"))
+                .put("volume_percent", JSONObject().put("type", "integer"))
                 .put("night_eye_care", JSONObject().put("type", "boolean"))
         )
         addTool(
             "add_vocab_word",
-            "将一个英语单词加入百词斩离线词库中方便复习",
+            "将一个英语单词加入百词斩离线词库中",
             JSONObject()
                 .put("word", JSONObject().put("type", "string"))
                 .put("phonetic", JSONObject().put("type", "string"))
@@ -327,6 +454,34 @@ class PenAiMcpClient {
                 .put("root_breakdown", JSONObject().put("type", "string"))
                 .put("example_en", JSONObject().put("type", "string")),
             listOf("word", "meaning_zh")
+        )
+        addTool(
+            "launch_app",
+            "按包名或名称启动词典笔上的指定应用",
+            JSONObject().put("app_query", JSONObject().put("type", "string")),
+            listOf("app_query")
+        )
+
+        // 7. Email Integration (Read + Draft with user confirmation before SMTP send!)
+        addTool(
+            "list_recent_emails",
+            "查看笔端邮箱缓存中的最近邮件（含发件人、主题、摘要与未读状态），用于帮用户总结收件箱",
+            JSONObject().put("limit", JSONObject().put("type", "integer").put("description", "默认 8"))
+        )
+        addTool(
+            "read_email",
+            "按邮件 ID 或序号读取某封邮件的完整正文",
+            JSONObject().put("email_id_or_index", JSONObject().put("type", "string")),
+            listOf("email_id_or_index")
+        )
+        addTool(
+            "draft_email",
+            "为用户起草一封新邮件或回复草稿并弹出邮箱发送确认页（不会未经确认自动发送）",
+            JSONObject()
+                .put("to", JSONObject().put("type", "string").put("description", "收件人邮箱"))
+                .put("subject", JSONObject().put("type", "string"))
+                .put("body", JSONObject().put("type", "string")),
+            listOf("to", "subject", "body")
         )
 
         externalTools.forEach { (name, schemaObj) ->

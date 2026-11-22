@@ -124,6 +124,7 @@ fun HiddenVaultScreen(
     onImportSyncCode: (String) -> Unit,
     onExportJsonFile: () -> Unit,
     onImportJsonFile: () -> Unit,
+    onToggleStockHomeBypass60s: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!state.isVaultUnlocked) {
@@ -257,7 +258,8 @@ fun HiddenVaultScreen(
                             onRootDisableHomeComponent = onRootDisableHomeComponent,
                             onRootFreezeStock = onRootFreezeStock,
                             onRefreshDiagnostics = onRefreshDiagnostics,
-                            onOpenLabRadar = onOpenLab
+                            onOpenLabRadar = onOpenLab,
+                            onToggleStockHomeBypass60s = onToggleStockHomeBypass60s
                         )
                         VaultTab.SECURITY_SYNC -> SecurityAndSyncTab(
                             state = state,

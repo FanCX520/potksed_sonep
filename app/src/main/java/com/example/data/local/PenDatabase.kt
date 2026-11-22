@@ -14,9 +14,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CachedPoemEntity::class,
         TodoItemEntity::class,
         CalendarEventEntity::class,
-        CachedWeatherEntity::class
+        CachedWeatherEntity::class,
+        CustomWidgetEntity::class,
+        DrawerSlotEntity::class,
+        MailAccountEntity::class,
+        MailMessageEntity::class,
+        DesktopSnapshotEntity::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 abstract class PenDatabase : RoomDatabase() {
@@ -25,6 +30,10 @@ abstract class PenDatabase : RoomDatabase() {
     abstract fun todoDao(): TodoDao
     abstract fun calendarEventDao(): CalendarEventDao
     abstract fun weatherDao(): WeatherDao
+    abstract fun customWidgetDao(): CustomWidgetDao
+    abstract fun drawerSlotDao(): DrawerSlotDao
+    abstract fun mailDao(): MailDao
+    abstract fun desktopSnapshotDao(): DesktopSnapshotDao
 
     companion object {
         @Volatile
@@ -84,6 +93,94 @@ abstract class PenDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `custom_widgets` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `placement` TEXT NOT NULL,
+                        `widthDp` INTEGER NOT NULL,
+                        `accentHex` INTEGER NOT NULL,
+                        `dslJson` TEXT NOT NULL,
+                        `sortOrder` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `drawer_slots` (
+                        `id` TEXT NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `refId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `subtitle` TEXT NOT NULL,
+                        `accentHex` INTEGER NOT NULL,
+                        `sortOrder` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `mail_accounts` (
+                        `id` TEXT NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `emailAddress` TEXT NOT NULL,
+                        `username` TEXT NOT NULL,
+                        `passwordOrAuthCode` TEXT NOT NULL,
+                        `imapHost` TEXT NOT NULL,
+                        `imapPort` INTEGER NOT NULL,
+                        `smtpHost` TEXT NOT NULL,
+                        `smtpPort` INTEGER NOT NULL,
+                        `useSsl` INTEGER NOT NULL,
+                        `isDefault` INTEGER NOT NULL,
+                        `lastSyncedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `mail_messages` (
+                        `id` TEXT NOT NULL,
+                        `accountId` TEXT NOT NULL,
+                        `uid` TEXT NOT NULL,
+                        `folder` TEXT NOT NULL,
+                        `fromAddress` TEXT NOT NULL,
+                        `toAddress` TEXT NOT NULL,
+                        `subject` TEXT NOT NULL,
+                        `snippet` TEXT NOT NULL,
+                        `bodyText` TEXT NOT NULL,
+                        `dateLabel` TEXT NOT NULL,
+                        `timestampMs` INTEGER NOT NULL,
+                        `isUnread` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `desktop_snapshots` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `payloadJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): PenDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -91,7 +188,7 @@ abstract class PenDatabase : RoomDatabase() {
                     PenDatabase::class.java,
                     "penos_launcher.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

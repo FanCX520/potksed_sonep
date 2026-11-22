@@ -17,35 +17,50 @@ import com.example.PenOsApplication
 import com.example.data.local.CachedPoemEntity
 import com.example.data.local.CachedWeatherEntity
 import com.example.data.local.CalendarEventEntity
+import com.example.data.local.CustomWidgetEntity
+import com.example.data.local.DesktopSnapshotEntity
+import com.example.data.local.DrawerSlotEntity
+import com.example.data.local.MailAccountEntity
+import com.example.data.local.MailMessageEntity
 import com.example.data.local.OfflineSeedData
 import com.example.data.local.TodoItemEntity
 import com.example.data.local.VocabCatalogExpanded
 import com.example.data.local.VocabProgressEntity
-import com.example.data.local.VocabWordEntity
 import com.example.data.local.VocabWordWithProgress
+import com.example.data.prefs.AiApiProfile
 import com.example.data.prefs.AiPreset
+import com.example.data.prefs.MultiClockConfig
 import com.example.data.prefs.PenConfig
 import com.example.data.remote.AiChatMessage
-import com.example.data.remote.PenMcpToolResult
 import com.example.data.remote.WeatherCityOption
 import com.example.data.remote.WmoWeatherMapper
 import com.example.system.AntiLockCoordinator
+import com.example.system.BitmapDecodeCache
 import com.example.system.InstalledAppInfo
+import com.example.system.LanServerStatus
 import com.example.system.PenKeepAliveService
 import com.example.system.SafeMediaImporter
 import com.example.system.SystemDiagnostics
 import com.example.system.SystemTakeoverHelper
 import com.example.system.WhiteNoiseType
+import com.example.data.remote.PenMcpToolResult
+import com.example.ui.theme.FontSlotSpec
+import com.example.ui.theme.PenFontCatalog
+import com.example.ui.theme.PenMotionTier
+import com.example.widgets.CustomWidgetDslParser
+import com.example.widgets.CustomWidgetTemplates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -58,17 +73,32 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     private val vocabDao = app.database.vocabDao()
     private val todoDao = app.database.todoDao()
     private val calendarEventDao = app.database.calendarEventDao()
+    private val customWidgetDao = app.database.customWidgetDao()
+    private val drawerSlotDao = app.database.drawerSlotDao()
+    private val mailDao = app.database.mailDao()
+    private val snapshotDao = app.database.desktopSnapshotDao()
+    private val snapshotManager = app.snapshotManager
     private val poetryRepo = app.poetryRepository
     private val weatherRepo = app.weatherRepository
     private val syncManager = app.vocabSyncManager
     private val appRepo = app.installedAppRepository
     private val whiteNoise = app.whiteNoiseEngine
     private val aiMcpClient = app.aiMcpClient
+    private val mailClient = app.mailClient
+    val lanAdminServer = app.lanAdminServer
     val nativeWidgetHost = app.nativeWidgetHostManager
 
     private val _screenMode = MutableStateFlow(PenScreenMode.DESKTOP)
     private val _activeOverlay = MutableStateFlow(DesktopOverlay.NONE)
-    private val _clock = MutableStateFlow(readTelemetry(previous = ClockTelemetryState(), includeHeavyStats = true))
+
+    // 60fps Architecture: 1-second ticks stay in clockTickFlow so only clock leaves recompose!
+    private val initialTelemetry = readTelemetry(previous = ClockTelemetryState(), includeHeavyStats = true)
+    private val _clockTick = MutableStateFlow(initialTelemetry)
+    val clockTickFlow: StateFlow<ClockTelemetryState> = _clockTick.asStateFlow()
+
+    // Slow telemetry in uiState updates only on minute/date/battery/RAM change (NOT every second)
+    private val _slowTelemetry = MutableStateFlow(initialTelemetry)
+
     private val _pomodoro = MutableStateFlow(PomodoroState())
     private val _deviceControl = MutableStateFlow(readDeviceControl())
     private val _isPoemLoading = MutableStateFlow(false)
@@ -87,9 +117,44 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusBanner = MutableStateFlow<String?>(null)
     private val _generatedSyncCode = MutableStateFlow<String?>(null)
 
+    // Mail ephemeral UI state
+    private val _selectedMailId = MutableStateFlow<String?>(null)
+    private val _isMailLoading = MutableStateFlow(false)
+    private val _isMailAiProcessing = MutableStateFlow(false)
+    private val _mailAiSummary = MutableStateFlow("")
+    private val _pendingMailDraft = MutableStateFlow<MailDraftState?>(null)
+    private val _showMailAccountDialog = MutableStateFlow(false)
+
+    // PenOS 5.0 Guardrails, RAM Governance, 60s Bypass & Gesture Haptics
+    private val _pendingMcpChanges = MutableStateFlow<List<PendingMcpChange>>(emptyList())
+    private val _memoryHealth = MutableStateFlow(MemoryHealthState(availRamMb = initialTelemetry.availRamMb))
+    private val _stockHomeBypassSec = MutableStateFlow(0)
+    private val _gestureHapticNonce = MutableStateFlow(0)
+
     private var allWordsCache: List<VocabWordWithProgress> = emptyList()
     private var lastUserInteractionElapsedMs: Long = SystemClock.elapsedRealtime()
     private var lastSecretTapElapsedMs: Long = 0L
+    private var hasCheckedInitialSetup: Boolean = false
+    private var isSilentMailSyncRunning: Boolean = false
+
+    private val harnessExecutor = PenHarnessExecutor(
+        prefs = prefs,
+        database = app.database,
+        weatherRepo = weatherRepo,
+        whiteNoise = whiteNoise,
+        getIsoDate = { _clockTick.value.isoDate },
+        getInstalledApps = { _installedApps.value },
+        onSetWeatherSource = { _weatherSourceStatus.value = it },
+        onStartPomodoro = { openPomodoroFocus(autoStartMinutes = it) },
+        onSetBrightness = { setScreenBrightness(it) },
+        onSetVolume = { setMediaVolume(it) },
+        onLaunchApp = { launchApp(it) },
+        onPresentMailDraft = { to, subject, body ->
+            _pendingMailDraft.value = MailDraftState(to = to, subject = subject, body = body, isAiGenerated = true)
+            _activeOverlay.value = DesktopOverlay.NONE
+            _screenMode.value = PenScreenMode.MAIL
+        }
+    )
 
     private data class CoreBundle(
         val mode: PenScreenMode,
@@ -108,11 +173,26 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         val events: List<CalendarEventEntity>
     )
 
+    private data class Ext40Bundle(
+        val customWidgets: List<CustomWidgetEntity>,
+        val drawerSlots: List<DrawerSlotEntity>,
+        val mail: MailUiState,
+        val lanServer: LanServerStatus
+    )
+
     private data class FocusControlBundle(
         val pomodoro: PomodoroState,
         val deviceControl: DeviceControlState,
         val isPoemLoading: Boolean,
         val lab: LabState
+    )
+
+    private data class Pen50Bundle(
+        val snapshots: List<DesktopSnapshotEntity>,
+        val pendingMcp: List<PendingMcpChange>,
+        val memoryHealth: MemoryHealthState,
+        val bypassSec: Int,
+        val hapticNonce: Int
     )
 
     private data class AppMetaBundle(
@@ -123,14 +203,15 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         val isVaultUnlocked: Boolean,
         val isSyncing: Boolean,
         val statusBanner: String?,
-        val syncCode: String?
+        val syncCode: String?,
+        val pen50: Pen50Bundle
     )
 
     private val coreFlow = combine(
         _screenMode,
         _activeOverlay,
         prefs.configFlow,
-        _clock,
+        _slowTelemetry,
         poetryRepo.latestPoemFlow
     ) { mode, overlay, config, clock, poem ->
         CoreBundle(mode, overlay, config, clock, poem ?: OfflineSeedData.defaultPoems.first())
@@ -158,6 +239,44 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             todos = todos,
             events = events
         )
+    }
+
+    private val mailMetaFlow = combine(
+        _selectedMailId,
+        _isMailLoading,
+        _isMailAiProcessing,
+        _mailAiSummary,
+        _pendingMailDraft
+    ) { selId, loading, aiBusy, summary, draft ->
+        listOf(selId, loading, aiBusy, summary, draft)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private val mailStateFlow = combine(
+        mailDao.observeAccounts(),
+        mailDao.observeRecentMessages(),
+        mailMetaFlow,
+        _showMailAccountDialog
+    ) { accounts, msgs, meta, showAcc ->
+        MailUiState(
+            accounts = accounts,
+            messages = msgs,
+            selectedMessageId = meta[0] as String? ?: msgs.firstOrNull()?.id,
+            isLoading = meta[1] as Boolean,
+            isAiProcessing = meta[2] as Boolean,
+            aiSummary = meta[3] as String,
+            pendingDraft = meta[4] as MailDraftState?,
+            showAccountDialog = showAcc
+        )
+    }
+
+    private val ext40Flow = combine(
+        customWidgetDao.observeAllCustomWidgets(),
+        drawerSlotDao.observeAllSlots(),
+        mailStateFlow,
+        lanAdminServer.status
+    ) { customWidgets, drawerSlots, mail, lan ->
+        Ext40Bundle(customWidgets, drawerSlots, mail, lan)
     }
 
     private val labFlow = combine(
@@ -197,8 +316,18 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         listOf(unlocked, syncing, banner, code)
     }
 
+    private val pen50Flow = combine(
+        snapshotDao.observeRecentSnapshots(),
+        _pendingMcpChanges,
+        _memoryHealth,
+        _stockHomeBypassSec,
+        _gestureHapticNonce
+    ) { snaps, pending, mem, bypassSec, haptic ->
+        Pen50Bundle(snaps, pending, mem, bypassSec, haptic)
+    }
+
     @Suppress("UNCHECKED_CAST")
-    private val appMetaFlow = combine(appSubFlow, metaSubFlow) { a, m ->
+    private val appMetaFlow = combine(appSubFlow, metaSubFlow, pen50Flow) { a, m, p50 ->
         AppMetaBundle(
             installedApps = a[0] as List<InstalledAppInfo>,
             vocabSession = a[1] as VocabSessionState,
@@ -207,16 +336,18 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             isVaultUnlocked = m[0] as Boolean,
             isSyncing = m[1] as Boolean,
             statusBanner = m[2] as String?,
-            syncCode = m[3] as String?
+            syncCode = m[3] as String?,
+            pen50 = p50
         )
     }
 
     val uiState: StateFlow<PenOsUiState> = combine(
         coreFlow,
         productivityFlow,
+        ext40Flow,
         focusControlFlow,
         appMetaFlow
-    ) { core, prod, focus, appMeta ->
+    ) { core, prod, ext, focus, appMeta ->
         PenOsUiState(
             mode = core.mode,
             activeOverlay = core.overlay,
@@ -232,15 +363,24 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             citySearchResults = prod.cities,
             todos = prod.todos,
             calendarEvents = prod.events,
+            customWidgets = ext.customWidgets,
+            drawerSlots = ext.drawerSlots,
             installedApps = appMeta.installedApps,
             vocabSession = appMeta.vocabSession,
+            mail = ext.mail,
+            lanServer = ext.lanServer,
             lab = focus.lab,
             secretTrigger = appMeta.secretTrigger,
             diagnostics = appMeta.diagnostics,
             isVaultUnlocked = appMeta.isVaultUnlocked,
             isSyncing = appMeta.isSyncing,
             statusBannerMessage = appMeta.statusBanner,
-            generatedSyncCode = appMeta.syncCode
+            generatedSyncCode = appMeta.syncCode,
+            recentSnapshots = appMeta.pen50.snapshots,
+            pendingMcpChanges = appMeta.pen50.pendingMcp,
+            memoryHealth = appMeta.pen50.memoryHealth,
+            stockHomeBypassRemainingSec = appMeta.pen50.bypassSec,
+            gestureHapticNonce = appMeta.pen50.hapticNonce
         )
     }.stateIn(
         scope = viewModelScope,
@@ -252,6 +392,8 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         initializeOfflineData()
         observePreferencesForSystemGuards()
         observeVocabWords()
+        observeMemoryPressure()
+        wireLanServerCallbacks()
         startLowPowerClockAndLoops()
         refreshInstalledApps()
         refreshSystemDiagnostics()
@@ -261,7 +403,88 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         whiteNoise.stop()
+        lanAdminServer.stop()
         super.onCleared()
+    }
+
+    private fun wireLanServerCallbacks() {
+        lanAdminServer.onRemoteAiPrompt = { prompt ->
+            val cfg = prefs.currentConfig()
+            val profile = cfg.activeAiProfile()
+            val userMsg = AiChatMessage("lan_${System.currentTimeMillis()}", "user", "[局域网] $prompt")
+            _aiMessages.update { (it + userMsg).takeLast(24) }
+            var snapCaptured = false
+            val result = aiMcpClient.sendChatWithMcp(
+                profile = profile,
+                history = _aiMessages.value,
+                userPrompt = prompt,
+                externalMcpUrl = cfg.externalMcpUrl,
+                desktopToolExecutor = { name, args ->
+                    if (!harnessExecutor.isReadOnlyTool(name) && !snapCaptured) {
+                        snapshotManager.captureSnapshot("局域网 AI 修改前：${prompt.take(18)}", "LAN")
+                        snapCaptured = true
+                    }
+                    harnessExecutor.execute(name, args)
+                }
+            )
+            result.fold(
+                onSuccess = { reply ->
+                    _aiMessages.update { (it + reply).takeLast(24) }
+                    reply.content to reply.toolActionsSummary
+                },
+                onFailure = { err ->
+                    "执行失败：${err.message}" to ""
+                }
+            )
+        }
+        lanAdminServer.onMailAccountAdded = {
+            syncAllMailAccounts()
+        }
+    }
+
+    private fun observeMemoryPressure() {
+        viewModelScope.launch {
+            app.memoryPressureFlow.collect { nonce ->
+                if (nonce > 0) {
+                    enforceRamAutoDowngradeIfNeeded(availMb = _clockTick.value.availRamMb, forcedByTrim = true)
+                }
+            }
+        }
+    }
+
+    private suspend fun enforceRamAutoDowngradeIfNeeded(availMb: Int, forcedByTrim: Boolean) {
+        val cfg = prefs.currentConfig()
+        _memoryHealth.update { it.copy(availRamMb = availMb) }
+        val isHeavyWallpaper = cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_MP4 ||
+            cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_GIF
+        if ((forcedByTrim || availMb in 1..109) && isHeavyWallpaper) {
+            BitmapDecodeCache.clear()
+            PenFontCatalog.clearExternalCache()
+            val prevMode = cfg.dynamicWallpaperMode
+            val prevMedia = cfg.dynamicWallpaperMediaPath
+            prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
+            _memoryHealth.value = MemoryHealthState(
+                isDegraded = true,
+                previousWallpaperMode = prevMode,
+                previousMediaPath = prevMedia,
+                availRamMb = availMb
+            )
+            showToast("内存偏紧(${availMb}MB)，已自动降级动态壁纸以保障桌面流畅")
+        }
+    }
+
+    fun restoreDegradedWallpaper() {
+        onUserInteraction()
+        val mem = _memoryHealth.value
+        if (!mem.isDegraded || mem.previousWallpaperMode.isBlank()) return
+        viewModelScope.launch {
+            prefs.setDynamicWallpaperConfig(
+                mode = mem.previousWallpaperMode,
+                mediaPath = mem.previousMediaPath.takeIf { it.isNotBlank() }
+            )
+            _memoryHealth.value = mem.copy(isDegraded = false)
+            showToast("已恢复先前的动态壁纸")
+        }
     }
 
     private fun initializeOfflineData() {
@@ -290,12 +513,55 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                     CalendarEventEntity(dateIso = todayIso, timeHHmm = "19:30", title = "晚自习番茄专注 25 分钟")
                 )
             }
+            if (customWidgetDao.getCount() == 0) {
+                val sampleBlocks = JSONArray().apply {
+                    put(JSONObject().put("type", "header").put("title", "学习冲刺看板").put("badge", "MCP 可改"))
+                    put(JSONObject().put("type", "countdown").put("label", "期末目标倒计时").put("target_iso", "2027-06-07"))
+                    put(
+                        JSONObject().put("type", "checklist").put(
+                            "items",
+                            JSONArray().apply {
+                                put(JSONObject().put("text", "英语核心 20 词").put("done", false))
+                                put(JSONObject().put("text", "25 分钟无干扰专注").put("done", false))
+                            }
+                        )
+                    )
+                    put(JSONObject().put("type", "action_button").put("label", "一键开启专注").put("action", "pomodoro").put("target", "25"))
+                }
+                customWidgetDao.upsert(
+                    CustomWidgetEntity(
+                        id = "sample_sprint_board",
+                        title = "学习冲刺看板",
+                        placement = CustomWidgetEntity.PLACEMENT_BOTH,
+                        widthDp = 204,
+                        accentHex = 0xFF38BDF8,
+                        dslJson = sampleBlocks.toString()
+                    )
+                )
+            }
+            if (drawerSlotDao.getCount() == 0) {
+                drawerSlotDao.insertAll(
+                    listOf(
+                        DrawerSlotEntity(id = "slot_clock", type = DrawerSlotEntity.TYPE_BUILTIN_CLOCK, refId = "multi_clock", title = "多样式时钟", sortOrder = 0),
+                        DrawerSlotEntity(id = "slot_cw_sample_sprint_board", type = DrawerSlotEntity.TYPE_CUSTOM_WIDGET, refId = "sample_sprint_board", title = "学习冲刺看板", sortOrder = 1),
+                        DrawerSlotEntity(id = "slot_ai_switch", type = DrawerSlotEntity.TYPE_AI_SWITCHER, refId = "ai_profiles", title = "AI 模型快切", sortOrder = 2),
+                        DrawerSlotEntity(id = "slot_mail", type = DrawerSlotEntity.TYPE_BUILTIN_MAIL, refId = "mail_inbox", title = "笔端邮箱", sortOrder = 3),
+                        DrawerSlotEntity(id = "slot_act_lan", type = DrawerSlotEntity.TYPE_ACTION_TILE, refId = "lan_admin", title = "局域网管理", sortOrder = 4)
+                    )
+                )
+            }
         }
     }
 
     private fun observePreferencesForSystemGuards() {
         viewModelScope.launch {
             prefs.configFlow.collect { cfg ->
+                if (!hasCheckedInitialSetup) {
+                    hasCheckedInitialSetup = true
+                    if (!cfg.setupAssistantCompleted) {
+                        _screenMode.value = PenScreenMode.SETUP
+                    }
+                }
                 AntiLockCoordinator.updateRules(
                     blockedPkg = cfg.blockedStockLauncherPackage,
                     blockedActivities = cfg.blockedHomeActivities,
@@ -335,10 +601,21 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             var tickCount = 0
             while (isActive) {
                 val nowElapsed = SystemClock.elapsedRealtime()
-                _clock.value = readTelemetry(previous = _clock.value, includeHeavyStats = (tickCount % 10 == 0))
+                val includeHeavy = (tickCount % 15 == 0)
+                val nextClock = readTelemetry(previous = _clockTick.value, includeHeavyStats = includeHeavy)
+                _clockTick.value = nextClock
+
+                // Only propagate to monolithic uiState when minute/date or heavy telemetry changes!
+                val prevSlow = _slowTelemetry.value
+                if (includeHeavy ||
+                    nextClock.timeHHmm != prevSlow.timeHHmm ||
+                    nextClock.isoDate != prevSlow.isoDate
+                ) {
+                    _slowTelemetry.value = nextClock.copy(secondsStr = "00")
+                }
                 tickCount++
 
-                // Pomodoro countdown tick
+                // Pomodoro countdown tick (only mutates _pomodoro while running)
                 val pomo = _pomodoro.value
                 if (pomo.isRunning) {
                     if (pomo.remainingSeconds > 1) {
@@ -368,6 +645,19 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val cfg = uiState.value.config
+
+                // PenOS 5.0: Update 60s stock home bypass countdown
+                val bypassSec = AntiLockCoordinator.remainingStockHomeBypassSec()
+                if (_stockHomeBypassSec.value != bypassSec) {
+                    _stockHomeBypassSec.value = bypassSec
+                }
+
+                // PenOS 5.0: 1GB RAM watchdog & 15-min silent Wi-Fi mail sync on heavy telemetry ticks
+                if (includeHeavy) {
+                    enforceRamAutoDowngradeIfNeeded(availMb = nextClock.availRamMb, forcedByTrim = false)
+                    maybeRunSilentWifiMailSync(cfg = cfg, isWifi = nextClock.isWifiConnected)
+                }
+
                 if (_screenMode.value == PenScreenMode.DESKTOP &&
                     _activeOverlay.value == DesktopOverlay.NONE &&
                     cfg.standByTimeoutSec > 0
@@ -380,6 +670,101 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
                 delay(1000L)
             }
+        }
+    }
+
+    private fun maybeRunSilentWifiMailSync(cfg: PenConfig, isWifi: Boolean) {
+        if (!cfg.mailAutoSyncEnabled || !isWifi || _memoryHealth.value.isDegraded) return
+        if (_screenMode.value == PenScreenMode.STANDBY || _isMailLoading.value || isSilentMailSyncRunning) return
+        val now = System.currentTimeMillis()
+        if (now - cfg.lastMailAutoSyncAt < 15L * 60L * 1000L) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val accounts = mailDao.getAccountsSnapshot()
+            if (accounts.isEmpty()) return@launch
+            isSilentMailSyncRunning = true
+            try {
+                val unreadBefore = mailDao.getRecentMessagesSnapshot(60).count { it.isUnread }
+                var anySuccess = false
+                accounts.forEach { acc ->
+                    mailClient.fetchRecentInbox(acc, maxCount = 15).onSuccess { list ->
+                        mailDao.upsertMessages(list)
+                        mailDao.updateAccountSyncedAt(acc.id, System.currentTimeMillis())
+                        anySuccess = true
+                    }
+                }
+                if (anySuccess) {
+                    prefs.setLastMailAutoSyncAt(System.currentTimeMillis())
+                    val unreadAfter = mailDao.getRecentMessagesSnapshot(60).count { it.isUnread }
+                    if (unreadAfter > unreadBefore) {
+                        showToast("收到 ${unreadAfter - unreadBefore} 封新邮件")
+                    }
+                }
+            } finally {
+                isSilentMailSyncRunning = false
+            }
+        }
+    }
+
+    // --- PenOS 5.0 Stock Home 60s Bypass, Gesture Tuning, Mail Auto-Sync & Config Backup ---
+    fun toggleStockHomeBypass60s() {
+        onUserInteraction()
+        if (AntiLockCoordinator.isStockHomeBypassActive()) {
+            AntiLockCoordinator.revokeStockHomeBypass()
+            _stockHomeBypassSec.value = 0
+            showToast("已恢复久学网原厂桌面拦截防锁回")
+        } else {
+            AntiLockCoordinator.grantStockHomeBypass(60_000L)
+            _stockHomeBypassSec.value = 60
+            showToast("已临时放行原厂桌面 60 秒（倒计时结束自动恢复拦截）")
+        }
+    }
+
+    fun setSwipeSensitivityDp(dp: Float) {
+        onUserInteraction()
+        viewModelScope.launch { prefs.setSwipeSensitivityDp(dp) }
+    }
+
+    fun setGestureHapticsEnabled(enabled: Boolean) {
+        onUserInteraction()
+        viewModelScope.launch { prefs.setGestureHapticsEnabled(enabled) }
+    }
+
+    fun triggerGestureHaptic() {
+        if (uiState.value.config.gestureHapticsEnabled) {
+            _gestureHapticNonce.value += 1
+        }
+    }
+
+    fun setMailAutoSyncEnabled(enabled: Boolean) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setMailAutoSyncEnabled(enabled)
+            showToast(if (enabled) "已开启连 Wi-Fi 每 15 分钟静默收信" else "已关闭后台自动收信")
+        }
+    }
+
+    suspend fun exportFullConfigJson(includeSecrets: Boolean = false): String =
+        snapshotManager.exportFullConfigJson(includeSecrets = includeSecrets)
+
+    fun importFullConfigJson(json: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            snapshotManager.importFullConfigJson(json)
+                .onSuccess { showToast(it) }
+                .onFailure { showToast("导入配置失败：${it.message}") }
+        }
+    }
+
+    fun syncFullConfigWithWebDav(uploadOnly: Boolean = false) {
+        onUserInteraction()
+        if (_isSyncing.value) return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            val res = snapshotManager.syncFullConfigWithWebDav(uploadOnly = uploadOnly)
+            _isSyncing.value = false
+            res.onSuccess { showToast(it) }
+                .onFailure { showToast("WebDAV 配置同步失败：${it.message}") }
         }
     }
 
@@ -419,6 +804,500 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     fun wakeFromStandBy() {
         onUserInteraction()
         _screenMode.value = PenScreenMode.DESKTOP
+    }
+
+    // --- Setup Assistant ---
+    fun completeSetupAssistant() {
+        onUserInteraction()
+        hasCheckedInitialSetup = true
+        _screenMode.value = PenScreenMode.DESKTOP
+        showToast("欢迎使用 PenOS 5.0，已准备就绪")
+        viewModelScope.launch {
+            prefs.setSetupAssistantCompleted(true)
+        }
+    }
+
+    fun reopenSetupAssistant() {
+        onUserInteraction()
+        _activeOverlay.value = DesktopOverlay.NONE
+        _screenMode.value = PenScreenMode.SETUP
+    }
+
+    // --- Motion Tier, 4-Mode Dynamic Wallpaper, 5-Slot Global Typography & 6-Style Clock ---
+    fun setMotionTier(tierId: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setMotionTier(tierId)
+            val label = when (tierId) {
+                PenMotionTier.FAST.id -> "极速流畅（60fps 推荐）"
+                PenMotionTier.SPRING.id -> "轻盈弹簧"
+                else -> "零动效省电"
+            }
+            showToast("已切换动效档位：$label")
+        }
+    }
+
+    fun setDynamicWallpaperMode(mode: String, proceduralStyle: String? = null, mediaPath: String? = null) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setDynamicWallpaperConfig(mode = mode, proceduralStyle = proceduralStyle, mediaPath = mediaPath)
+            val label = when (mode) {
+                PenConfig.DYN_WALLPAPER_PROCEDURAL -> "代码极光动效"
+                PenConfig.DYN_WALLPAPER_GIF -> "本地 GIF 动态壁纸"
+                PenConfig.DYN_WALLPAPER_MP4 -> "本地 MP4 视频壁纸"
+                PenConfig.DYN_WALLPAPER_LIVE -> "安卓系统动态壁纸透传"
+                else -> "静态高清壁纸"
+            }
+            showToast("动态壁纸已切换：$label")
+        }
+    }
+
+    fun importDynamicMediaFromUri(uri: Uri, extension: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            SafeMediaImporter.importDynamicMediaFromUri(app, uri, extension)
+                .onSuccess { path ->
+                    val mode = if (extension.equals("mp4", true)) PenConfig.DYN_WALLPAPER_MP4 else PenConfig.DYN_WALLPAPER_GIF
+                    prefs.setDynamicWallpaperConfig(mode = mode, mediaPath = path)
+                    showToast("已应用本地 ${extension.uppercase()} 动态壁纸")
+                }
+                .onFailure { showToast("导入动态壁纸失败：${it.message}") }
+        }
+    }
+
+    fun importDynamicMediaFromPath(rawPath: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            SafeMediaImporter.importDynamicMediaFromPath(app, rawPath)
+                .onSuccess { (ext, path) ->
+                    val mode = if (ext == "mp4") PenConfig.DYN_WALLPAPER_MP4 else PenConfig.DYN_WALLPAPER_GIF
+                    prefs.setDynamicWallpaperConfig(mode = mode, mediaPath = path)
+                    showToast("已加载 ${ext.uppercase()} 动态壁纸")
+                }
+                .onFailure { showToast("读取失败：${it.message}") }
+        }
+    }
+
+    fun setMultiClockConfig(style: String? = null, shape: String? = null, showSeconds: Boolean? = null) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setMultiClockConfig(style = style, shape = shape, showSeconds = showSeconds)
+        }
+    }
+
+    fun cycleMultiClockStyle() {
+        onUserInteraction()
+        val styles = MultiClockConfig.allStyles.map { it.first }
+        val cur = uiState.value.config.multiClock.style
+        val next = styles[(styles.indexOf(cur).coerceAtLeast(0) + 1) % styles.size]
+        setMultiClockConfig(style = next)
+    }
+
+    fun updateFontSlot(slotName: String, spec: FontSlotSpec) {
+        onUserInteraction()
+        viewModelScope.launch { prefs.updateFontSlot(slotName, spec) }
+    }
+
+    fun importFontForSlotFromUri(slotName: String, uri: Uri) {
+        onUserInteraction()
+        viewModelScope.launch {
+            SafeMediaImporter.importFontFromUri(app, uri)
+                .onSuccess { path ->
+                    val cur = prefs.currentConfig().typographyProfile.slotByName(slotName)
+                    prefs.updateFontSlot(slotName, cur.copy(familyKey = "external", externalPath = path))
+                    showToast("已应用外部字体到 $slotName 通道")
+                }
+                .onFailure { showToast("字体导入失败：${it.message}") }
+        }
+    }
+
+    fun importFontForSlotFromPath(slotName: String, rawPath: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            SafeMediaImporter.importFontFromPath(app, rawPath)
+                .onSuccess { path ->
+                    val cur = prefs.currentConfig().typographyProfile.slotByName(slotName)
+                    prefs.updateFontSlot(slotName, cur.copy(familyKey = "external", externalPath = path))
+                    showToast("已从路径加载字体到 $slotName 通道")
+                }
+                .onFailure { showToast("字体路径无效：${it.message}") }
+        }
+    }
+
+    fun resetTypographyProfile() {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.resetTypographyProfile()
+            showToast("5 通道全局字体已重置默认")
+        }
+    }
+
+    // --- Custom DSL Widgets & Apple TV Drawer ---
+    fun toggleCustomWidgetChecklist(widget: CustomWidgetEntity, blockIndex: Int, itemIndex: Int) {
+        onUserInteraction()
+        val updatedJson = CustomWidgetDslParser.toggleChecklistItem(widget.dslJson, blockIndex, itemIndex)
+        mutateCustomWidgetDsl(widget, updatedJson)
+    }
+
+    fun mutateCustomWidgetDsl(widget: CustomWidgetEntity, updatedDslJson: String) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) {
+            customWidgetDao.upsert(widget.copy(dslJson = updatedDslJson, updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    fun refreshCustomHttpBlock(widget: CustomWidgetEntity, blockIndex: Int, url: String, jsonPath: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            val res = CustomWidgetDslParser.fetchHttpJsonValue(url, jsonPath)
+            val nowLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+            res.onSuccess { value ->
+                val updated = CustomWidgetDslParser.updateHttpJsonCache(widget.dslJson, blockIndex, value, nowLabel)
+                customWidgetDao.upsert(widget.copy(dslJson = updated, updatedAt = System.currentTimeMillis()))
+                showToast("JSON 指标已刷新：$value")
+            }.onFailure { err ->
+                showToast("JSON 拉取失败：${err.message}")
+            }
+        }
+    }
+
+    fun runWidgetMacro(steps: List<String>) {
+        onUserInteraction()
+        if (steps.isEmpty()) return
+        viewModelScope.launch {
+            steps.take(6).forEach { rawStep ->
+                val parts = rawStep.trim().split(":", limit = 2)
+                val cmd = parts[0].lowercase()
+                val arg = parts.getOrElse(1) { "" }.trim()
+                when (cmd) {
+                    "night_eye_on" -> prefs.setNightDimAlpha(0.35f)
+                    "night_eye_off" -> prefs.setNightDimAlpha(0f)
+                    "white_noise" -> {
+                        if (arg.equals("stop", true)) {
+                            whiteNoise.stop()
+                        } else {
+                            val t = WhiteNoiseType.entries.firstOrNull { it.id.equals(arg, true) } ?: WhiteNoiseType.RAIN
+                            whiteNoise.start(t)
+                        }
+                    }
+                    "pomodoro" -> openPomodoroFocus(autoStartMinutes = arg.toIntOrNull() ?: 25)
+                    "brightness" -> arg.toIntOrNull()?.let { setScreenBrightness(it / 100f) }
+                    "volume" -> arg.toIntOrNull()?.let { setMediaVolume(it / 100f) }
+                    "theme_light" -> prefs.setDesignStyle(PenConfig.STYLE_APPLE_LIGHT)
+                    "theme_dark" -> prefs.setDesignStyle(PenConfig.STYLE_DARK_STANDBY)
+                    else -> dispatchCustomWidgetAction(cmd, arg)
+                }
+            }
+            showToast("宏工作流已执行（${steps.size} 步）")
+        }
+    }
+
+    fun installWidgetTemplate(templateId: String) {
+        onUserInteraction()
+        val tpl = CustomWidgetTemplates.findById(templateId) ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            snapshotManager.captureSnapshot("安装模板「${tpl.title}」前", "MANUAL")
+            customWidgetDao.upsert(tpl.toEntity())
+            val existingSlots = drawerSlotDao.getAllSnapshot()
+            if (existingSlots.none { it.type == DrawerSlotEntity.TYPE_CUSTOM_WIDGET && it.refId == tpl.id }) {
+                drawerSlotDao.upsert(
+                    DrawerSlotEntity(
+                        id = "slot_cw_${tpl.id}",
+                        type = DrawerSlotEntity.TYPE_CUSTOM_WIDGET,
+                        refId = tpl.id,
+                        title = tpl.title,
+                        sortOrder = existingSlots.size
+                    )
+                )
+            }
+            showToast("已一键安装模板「${tpl.title}」到主屏和抽屉")
+        }
+    }
+
+    fun dispatchCustomWidgetAction(action: String, target: String) {
+        onUserInteraction()
+        when (action.lowercase()) {
+            "pomodoro" -> openPomodoroFocus(autoStartMinutes = target.toIntOrNull() ?: 25)
+            "mail" -> switchMode(PenScreenMode.MAIL)
+            "lab" -> switchMode(PenScreenMode.LAB)
+            "vocab" -> switchMode(PenScreenMode.VOCAB)
+            "drawer" -> switchMode(PenScreenMode.APPLE_TV_DRAWER)
+            "theme_toggle" -> toggleQuickDesignStyle()
+            "lan_admin" -> {
+                if (!lanAdminServer.status.value.isRunning) toggleLanAdminServer()
+                switchMode(PenScreenMode.LAB)
+            }
+            "white_noise" -> {
+                if (target.equals("stop", true)) {
+                    stopWhiteNoise()
+                } else {
+                    val t = WhiteNoiseType.entries.firstOrNull { it.id.equals(target, true) } ?: WhiteNoiseType.RAIN
+                    toggleWhiteNoise(t)
+                }
+            }
+            "launch_app" -> {
+                if (target.isNotBlank()) launchApp(target) else openOverlay(DesktopOverlay.ALL_APPS)
+            }
+            else -> showToast("已执行组件动作：$action")
+        }
+    }
+
+    fun deleteCustomWidget(widgetId: String) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) {
+            customWidgetDao.deleteById(widgetId)
+            drawerSlotDao.deleteById("slot_cw_$widgetId")
+        }
+        showToast("已移除自定义组件")
+    }
+
+    fun addDrawerSlot(slotType: String, refId: String, title: String) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) {
+            val count = drawerSlotDao.getCount()
+            drawerSlotDao.upsert(
+                DrawerSlotEntity(
+                    id = "slot_${slotType.lowercase()}_${refId.ifBlank { System.currentTimeMillis().toString() }}",
+                    type = slotType,
+                    refId = refId,
+                    title = title,
+                    sortOrder = count
+                )
+            )
+        }
+        showToast("已添加「$title」到 Apple TV 抽屉")
+    }
+
+    fun removeDrawerSlot(slotId: String) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) { drawerSlotDao.deleteById(slotId) }
+        showToast("已从抽屉移除")
+    }
+
+    // --- LAN Web Admin Console ---
+    fun toggleLanAdminServer() {
+        onUserInteraction()
+        if (lanAdminServer.status.value.isRunning) {
+            lanAdminServer.stop()
+            showToast("局域网网页控制台已关闭")
+        } else {
+            val port = uiState.value.config.lanAdminPort
+            lanAdminServer.start(port)
+            showToast("局域网网页控制台已启动（端口 $port）")
+        }
+    }
+
+    fun regenerateLanPin() {
+        onUserInteraction()
+        viewModelScope.launch {
+            val newPin = prefs.regenerateLanAdminPin()
+            if (lanAdminServer.status.value.isRunning) {
+                val port = uiState.value.config.lanAdminPort
+                lanAdminServer.stop()
+                lanAdminServer.start(port)
+            }
+            showToast("已刷新 6 位局域网配对码：$newPin")
+        }
+    }
+
+    // --- Multi-AI API Profiles ---
+    fun selectAiApiProfile(profileId: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setActiveAiProfile(profileId)
+            val name = uiState.value.config.aiProfiles.firstOrNull { it.id == profileId }?.name ?: profileId
+            showToast("当前 AI 模型已切换：$name")
+        }
+    }
+
+    fun upsertAiApiProfile(profile: AiApiProfile) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.upsertAiApiProfile(profile)
+            showToast("已保存 AI 模型预设「${profile.name}」")
+        }
+    }
+
+    fun deleteAiApiProfile(profileId: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.deleteAiApiProfile(profileId)
+            showToast("已删除 AI 模型预设")
+        }
+    }
+
+    // --- Built-In IMAP/SMTP Email Client + AI Summarize & Draft ---
+    fun setShowMailAccountDialog(show: Boolean) {
+        onUserInteraction()
+        _showMailAccountDialog.value = show
+    }
+
+    fun saveMailAccount(account: MailAccountEntity) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) {
+            mailDao.upsertAccount(account)
+            _showMailAccountDialog.value = false
+            showToast("已保存邮箱账号 ${account.emailAddress}，正在同步收件箱…")
+            syncMailAccountInternal(account)
+        }
+    }
+
+    fun deleteMailAccount(accountId: String) {
+        onUserInteraction()
+        viewModelScope.launch(Dispatchers.IO) {
+            mailDao.deleteAccount(accountId)
+            mailDao.deleteMessagesForAccount(accountId)
+        }
+        showToast("已移除邮箱账号")
+    }
+
+    fun syncAllMailAccounts() {
+        onUserInteraction()
+        if (_isMailLoading.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val accounts = mailDao.getAccountsSnapshot()
+            if (accounts.isEmpty()) {
+                showToast("请先配置 IMAP 邮箱账号与授权码")
+                _showMailAccountDialog.value = true
+                return@launch
+            }
+            _isMailLoading.value = true
+            var totalFetched = 0
+            var lastError: String? = null
+            accounts.forEach { acc ->
+                val res = mailClient.fetchRecentInbox(acc, maxCount = 15)
+                res.onSuccess { list ->
+                    mailDao.upsertMessages(list)
+                    totalFetched += list.size
+                }.onFailure { err ->
+                    lastError = err.message
+                }
+            }
+            _isMailLoading.value = false
+            if (lastError != null && totalFetched == 0) {
+                showToast("收信失败：$lastError")
+            } else {
+                showToast("邮箱同步完成，共缓存 $totalFetched 封邮件")
+            }
+        }
+    }
+
+    private suspend fun syncMailAccountInternal(account: MailAccountEntity) {
+        _isMailLoading.value = true
+        mailClient.fetchRecentInbox(account, maxCount = 15)
+            .onSuccess { list ->
+                mailDao.upsertMessages(list)
+                showToast("已同步 ${list.size} 封最新邮件")
+            }
+            .onFailure { err ->
+                showToast("收信失败：${err.message}")
+            }
+        _isMailLoading.value = false
+    }
+
+    fun selectMailMessage(messageId: String) {
+        onUserInteraction()
+        _selectedMailId.value = messageId
+        viewModelScope.launch(Dispatchers.IO) {
+            mailDao.setUnread(messageId, false)
+        }
+    }
+
+    fun openMailCompose(to: String = "", subject: String = "", body: String = "", isAiGenerated: Boolean = false) {
+        onUserInteraction()
+        _pendingMailDraft.value = MailDraftState(to = to, subject = subject, body = body, isAiGenerated = isAiGenerated)
+    }
+
+    fun closeMailCompose() {
+        onUserInteraction()
+        _pendingMailDraft.value = null
+    }
+
+    fun sendMailDraft(to: String, subject: String, body: String) {
+        onUserInteraction()
+        val cleanTo = to.trim()
+        if (!cleanTo.contains("@")) {
+            showToast("请填写有效的收件人邮箱地址")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val account = mailDao.getAccountsSnapshot().firstOrNull { it.isDefault }
+                ?: mailDao.getAccountsSnapshot().firstOrNull()
+            if (account == null) {
+                showToast("请先绑定发信邮箱账号")
+                return@launch
+            }
+            _isMailLoading.value = true
+            val res = mailClient.sendEmail(account, cleanTo, subject.trim().ifBlank { "无主题" }, body)
+            _isMailLoading.value = false
+            res.onSuccess {
+                _pendingMailDraft.value = null
+                showToast("邮件已成功发送至 $cleanTo")
+            }.onFailure { err ->
+                showToast("发信失败：${err.message}")
+            }
+        }
+    }
+
+    fun summarizeInboxWithAi() {
+        onUserInteraction()
+        if (_isMailAiProcessing.value) return
+        val messages = uiState.value.mail.messages.take(8)
+        if (messages.isEmpty()) {
+            showToast("当前收件箱为空，请先点击同步收信")
+            return
+        }
+        val profile = uiState.value.config.activeAiProfile()
+        val digestInput = messages.mapIndexed { idx, m ->
+            "${idx + 1}. [${if (m.isUnread) "未读" else "已读"}] 发件人:${m.fromAddress} | 主题:${m.subject} | 摘要:${m.snippet.take(100)}"
+        }.joinToString("\n")
+
+        viewModelScope.launch {
+            _isMailAiProcessing.value = true
+            val res = aiMcpClient.sendQuickTextPrompt(
+                profile = profile,
+                systemPrompt = "你是精简高效的词典笔邮件助理。请用3~4条极简中文要点总结以下邮件，标注需要紧急回复的事项，控制在120字以内。",
+                userPrompt = digestInput
+            )
+            _isMailAiProcessing.value = false
+            res.onSuccess { summary ->
+                _mailAiSummary.value = summary
+            }.onFailure { err ->
+                showToast("AI 总结失败：${err.message}")
+            }
+        }
+    }
+
+    fun draftReplyWithAi(message: MailMessageEntity) {
+        onUserInteraction()
+        if (_isMailAiProcessing.value) return
+        val profile = uiState.value.config.activeAiProfile()
+        viewModelScope.launch {
+            _isMailAiProcessing.value = true
+            val res = aiMcpClient.sendQuickTextPrompt(
+                profile = profile,
+                systemPrompt = "你是得体的邮件回复助理。根据收到的邮件起草一封简洁礼貌的中文回复正文（直接输出正文内容，不含主题行）。",
+                userPrompt = "发件人：${message.fromAddress}\n主题：${message.subject}\n正文：\n${message.bodyText.take(600)}"
+            )
+            _isMailAiProcessing.value = false
+            res.onSuccess { draftBody ->
+                val replySubject = if (message.subject.startsWith("Re:", true)) message.subject else "Re: ${message.subject}"
+                val replyEmail = extractEmailAddress(message.fromAddress)
+                _pendingMailDraft.value = MailDraftState(
+                    to = replyEmail,
+                    subject = replySubject,
+                    body = draftBody,
+                    isAiGenerated = true
+                )
+            }.onFailure { err ->
+                showToast("AI 起草失败：${err.message}")
+            }
+        }
+    }
+
+    private fun extractEmailAddress(raw: String): String {
+        val match = Regex("<([^>]+@[^>]+)>").find(raw)
+        return match?.groupValues?.getOrNull(1)?.trim() ?: raw.trim()
     }
 
     // --- Pomodoro Focus Mode ---
@@ -564,6 +1443,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         onUserInteraction()
         viewModelScope.launch {
             prefs.setWallpaperForTheme(isLightTheme, presetId)
+            prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
             showToast(if (isLightTheme) "已更新白画廊时钟壁纸" else "已更新暗黑时钟壁纸")
         }
     }
@@ -575,6 +1455,8 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             SafeMediaImporter.importImageFromUri(app, uri, tag, maxDimensionPx = 960)
                 .onSuccess { path ->
                     prefs.setWallpaperForTheme(isLightTheme, PenConfig.WALLPAPER_CUSTOM, path)
+                    prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
+                    BitmapDecodeCache.clear()
                     showToast(if (isLightTheme) "已应用白画廊自定义壁纸" else "已应用暗黑自定义壁纸")
                 }
                 .onFailure { showToast("导入壁纸失败：${it.message}") }
@@ -588,6 +1470,8 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             SafeMediaImporter.importImageFromFilePath(app, rawPath, tag, maxDimensionPx = 960)
                 .onSuccess { path ->
                     prefs.setWallpaperForTheme(isLightTheme, PenConfig.WALLPAPER_CUSTOM, path)
+                    prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
+                    BitmapDecodeCache.clear()
                     showToast("已从本地路径应用自定义壁纸")
                 }
                 .onFailure { showToast("读取失败：${it.message}") }
@@ -637,34 +1521,16 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importCustomPoetryFontFromUri(uri: Uri) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importFontFromUri(app, uri)
-                .onSuccess { path ->
-                    prefs.setCustomPoetryFontPath(path)
-                    showToast("已应用外部古诗词字体")
-                }
-                .onFailure { showToast("字体导入失败：${it.message}") }
-        }
-    }
+    fun importCustomPoetryFontFromUri(uri: Uri) = importFontForSlotFromUri("poetry", uri)
 
-    fun importCustomPoetryFontFromPath(rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importFontFromPath(app, rawPath)
-                .onSuccess { path ->
-                    prefs.setCustomPoetryFontPath(path)
-                    showToast("已加载本地古诗词字体")
-                }
-                .onFailure { showToast("字体读取失败：${it.message}") }
-        }
-    }
+    fun importCustomPoetryFontFromPath(rawPath: String) = importFontForSlotFromPath("poetry", rawPath)
 
     fun clearCustomPoetryFont() {
         onUserInteraction()
         viewModelScope.launch {
             prefs.setCustomPoetryFontPath("")
+            val cur = prefs.currentConfig().typographyProfile.poetry
+            prefs.updateFontSlot("poetry", cur.copy(familyKey = "noto_serif_sc", externalPath = ""))
             showToast("已恢复内置思源宋体")
         }
     }
@@ -822,13 +1688,11 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteCalendarEvent(eventId: Long) {
         onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) {
-            calendarEventDao.deleteById(eventId)
-        }
+        viewModelScope.launch(Dispatchers.IO) { calendarEventDao.deleteById(eventId) }
     }
 
     // --- Todo Items ---
-    fun addTodo(title: String, dueDateIso: String = _clock.value.isoDate, priority: Int = 1) {
+    fun addTodo(title: String, dueDateIso: String = _clockTick.value.isoDate, priority: Int = 1) {
         onUserInteraction()
         val trimmed = title.trim()
         if (trimmed.isBlank()) return
@@ -881,9 +1745,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun inspectPackageActivities(packageName: String) {
-        viewModelScope.launch {
-            _inspectedActivities.value = appRepo.listExportedActivities(packageName)
-        }
+        viewModelScope.launch { _inspectedActivities.value = appRepo.listExportedActivities(packageName) }
     }
 
     fun launchScanApp() {
@@ -898,9 +1760,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             activityClass = cfg.scanActivityClass,
             isolateScanStack = true
         )
-        if (!ok) {
-            showToast("未找到扫学入口，请在密室重新选择 Activity")
-        }
+        if (!ok) showToast("未找到扫学入口，请在密室重新选择 Activity")
     }
 
     fun launchApp(packageName: String) {
@@ -1052,7 +1912,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Baicizhan 2.0 Vocab Trainer (200+ Graded + Mistakes + Custom TXT/CSV Import + Slash) ---
+    // --- Baicizhan 2.0 Vocab Trainer ---
     fun switchVocabBook(bookId: String) {
         onUserInteraction()
         viewModelScope.launch { prefs.setActiveVocabBook(bookId) }
@@ -1147,7 +2007,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             status = VocabProgressEntity.STATUS_MASTERED,
             familiarity = 5,
             nextReviewAt = now + 30L * 24L * 60L * 60L * 1000L,
-            wrongCount = 0, // Clears from mistake book once slashed!
+            wrongCount = 0,
             updatedAt = now
         )
         _vocabSession.update {
@@ -1188,11 +2048,9 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         val learning = bookWords.count { it.progress?.status == VocabProgressEntity.STATUS_LEARNING }
 
         val previousId = _vocabSession.value.currentWord?.word?.id
-        val currentOrNext = if (!forceNextWord && previousId != null) {
+        val currentOrNext = (if (!forceNextWord && previousId != null) {
             bookWords.firstOrNull { it.word.id == previousId }
-        } else {
-            null
-        } ?: pickNextWord(bookWords, previousId)
+        } else null) ?: pickNextWord(bookWords, previousId)
 
         val distractors = allWordsCache
             .asSequence()
@@ -1207,8 +2065,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                     accentHex = it.word.accentHex,
                     isCorrect = false
                 )
-            }
-            .toList()
+            }.toList()
 
         val correctOption = VocabQuizOption(
             wordId = currentOrNext.word.id,
@@ -1248,7 +2105,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         return pool.firstOrNull { it.word.id != excludeId } ?: pool.first()
     }
 
-    // --- Lab AI + Custom Presets + Built-in PenOS Desktop MCP Tool Execution ---
+    // --- Lab AI + Harness MCP ---
     fun saveAiConfig(baseUrl: String, apiKey: String, model: String, externalMcpUrl: String) {
         onUserInteraction()
         viewModelScope.launch {
@@ -1280,30 +2137,123 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _aiMessages.value = LabState().messages
     }
 
+    fun setMcpPreviewBeforeApply(enabled: Boolean) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setMcpPreviewBeforeApply(enabled)
+            showToast(if (enabled) "已开启 MCP 变更差异预览护栏" else "已切换为 MCP 直接执行（仍自动存档快照）")
+        }
+    }
+
+    fun togglePendingMcpChange(changeId: String) {
+        onUserInteraction()
+        _pendingMcpChanges.update { list ->
+            list.map { if (it.id == changeId) it.copy(selected = !it.selected) else it }
+        }
+    }
+
+    fun discardPendingMcpChanges() {
+        onUserInteraction()
+        _pendingMcpChanges.value = emptyList()
+        showToast("已放弃待应用的 AI 修改")
+    }
+
+    fun applyPendingMcpChanges() {
+        onUserInteraction()
+        val selected = _pendingMcpChanges.value.filter { it.selected }
+        if (selected.isEmpty()) {
+            _pendingMcpChanges.value = emptyList()
+            showToast("未勾选任何变更项")
+            return
+        }
+        viewModelScope.launch {
+            val label = selected.first().humanSummary.take(26)
+            snapshotManager.captureSnapshot("AI 应用前：$label", "MCP")
+            val logs = mutableListOf<String>()
+            selected.forEach { item ->
+                val argsObj = runCatching { JSONObject(item.argsJson) }.getOrDefault(JSONObject())
+                val res = harnessExecutor.execute(item.toolName, argsObj)
+                logs.add("${if (res.success) "✓" else "✗"} ${res.summary}")
+            }
+            _pendingMcpChanges.value = emptyList()
+            _aiMessages.update {
+                (it + AiChatMessage(
+                    id = "apply_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = "已存档快照并应用 ${selected.size} 项变更（可随时一键撤销）：\n${logs.joinToString("\n")}",
+                    toolActionsSummary = logs.joinToString(" · ")
+                )).takeLast(24)
+            }
+            showToast("已应用 ${selected.size} 项 AI 变更（支持一键回滚）")
+        }
+    }
+
+    fun rollbackLatestSnapshot() {
+        onUserInteraction()
+        viewModelScope.launch {
+            snapshotManager.restoreLatestSnapshot()
+                .onSuccess { showToast(it) }
+                .onFailure { showToast(it.message ?: "暂无可撤销的桌面快照") }
+        }
+    }
+
+    fun restoreSnapshot(snapshotId: Long) {
+        onUserInteraction()
+        viewModelScope.launch {
+            snapshotManager.restoreSnapshot(snapshotId)
+                .onSuccess { showToast(it) }
+                .onFailure { showToast(it.message ?: "回滚失败") }
+        }
+    }
+
     fun sendAiPrompt(prompt: String) {
         val clean = prompt.trim()
         if (clean.isBlank() || _isAiLoading.value) return
         onUserInteraction()
 
         val cfg = uiState.value.config
-        val preset = cfg.aiPresets.firstOrNull { it.id == cfg.activeAiPresetId } ?: cfg.aiPresets.first()
+        val profile = cfg.activeAiProfile()
         val userMsg = AiChatMessage("u_${System.currentTimeMillis()}", "user", clean)
         val historyBefore = _aiMessages.value
         _aiMessages.value = (historyBefore + userMsg).takeLast(24)
 
         viewModelScope.launch {
             _isAiLoading.value = true
+            var autoSnapTaken = false
+            val stagedThisTurn = mutableListOf<PendingMcpChange>()
+
             val result = aiMcpClient.sendChatWithMcp(
-                baseUrl = cfg.aiBaseUrl,
-                apiKey = cfg.aiApiKey,
-                model = cfg.aiModel,
-                preset = preset,
+                profile = profile,
                 history = historyBefore,
                 userPrompt = clean,
                 externalMcpUrl = cfg.externalMcpUrl,
-                desktopToolExecutor = { toolName, args -> executeBuiltInMcpTool(toolName, args) }
+                desktopToolExecutor = { toolName, args ->
+                    if (harnessExecutor.isReadOnlyTool(toolName)) {
+                        harnessExecutor.execute(toolName, args)
+                    } else if (cfg.mcpPreviewBeforeApply) {
+                        val summary = harnessExecutor.describeChange(toolName, args)
+                        val pending = PendingMcpChange(
+                            id = "chg_${System.currentTimeMillis()}_${stagedThisTurn.size}",
+                            toolName = toolName,
+                            argsJson = args.toString(),
+                            humanSummary = summary,
+                            selected = true
+                        )
+                        stagedThisTurn.add(pending)
+                        PenMcpToolResult(toolName, "已加入待确认预览队列：$summary（等待用户在确认卡片点击「应用并存档」）", true)
+                    } else {
+                        if (!autoSnapTaken) {
+                            snapshotManager.captureSnapshot("AI 修改前：${clean.take(20)}", "MCP")
+                            autoSnapTaken = true
+                        }
+                        harnessExecutor.execute(toolName, args)
+                    }
+                }
             )
             _isAiLoading.value = false
+            if (stagedThisTurn.isNotEmpty()) {
+                _pendingMcpChanges.update { it + stagedThisTurn }
+            }
             result.onSuccess { reply ->
                 _aiMessages.update { (it + reply).takeLast(24) }
             }.onFailure { err ->
@@ -1311,112 +2261,6 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                     (it + AiChatMessage("err_${System.currentTimeMillis()}", "assistant", "请求失败：${err.message}")).takeLast(24)
                 }
             }
-        }
-    }
-
-    private suspend fun executeBuiltInMcpTool(toolName: String, args: JSONObject): PenMcpToolResult {
-        return when (toolName) {
-            "switch_theme" -> {
-                val style = args.optString("desktop_style", PenConfig.STYLE_DARK_STANDBY)
-                val normalized = if (style.contains("light", ignoreCase = true)) PenConfig.STYLE_APPLE_LIGHT else PenConfig.STYLE_DARK_STANDBY
-                prefs.setDesignStyle(normalized)
-                val standBy = args.optString("standby_style", "")
-                if (standBy.isNotBlank()) prefs.setStandByStyleMode(standBy)
-                PenMcpToolResult(toolName, "已切换桌面风格为 ${if (normalized == PenConfig.STYLE_APPLE_LIGHT) "Apple白画廊" else "暗黑StandBy"}", true)
-            }
-            "manage_widgets" -> {
-                val wid = args.optString("widget_id")
-                val enable = args.optBoolean("enable", true)
-                val cur = uiState.value.config.enabledWidgetIds.toMutableList()
-                if (enable && !cur.contains(wid) && PenConfig.DEFAULT_WIDGET_ORDER.contains(wid)) {
-                    cur.add(wid)
-                    prefs.setEnabledWidgets(cur)
-                } else if (!enable && cur.contains(wid) && cur.size > 1) {
-                    cur.remove(wid)
-                    prefs.setEnabledWidgets(cur)
-                }
-                PenMcpToolResult(toolName, "已${if (enable) "开启" else "隐藏"}小组件 $wid", true)
-            }
-            "add_todo" -> {
-                val title = args.optString("title").trim()
-                val due = args.optString("due_date").ifBlank { _clock.value.isoDate }
-                if (title.isBlank()) return PenMcpToolResult(toolName, "待办标题为空", false)
-                todoDao.insertTodo(TodoItemEntity(title = title, dueDateIso = due, priority = 1))
-                PenMcpToolResult(toolName, "已添加待办「$title」", true)
-            }
-            "add_calendar_event" -> {
-                val title = args.optString("title").trim()
-                val dateIso = args.optString("date_iso").ifBlank { _clock.value.isoDate }
-                val time = normalizeHHmm(args.optString("time_hhmm", "08:30"))
-                if (title.isBlank()) return PenMcpToolResult(toolName, "日程标题为空", false)
-                calendarEventDao.insertEvent(CalendarEventEntity(dateIso = dateIso, timeHHmm = time, title = title))
-                PenMcpToolResult(toolName, "已添加日程 $dateIso $time「$title」", true)
-            }
-            "switch_weather_city" -> {
-                val cityName = args.optString("city_name").trim()
-                val found = WmoWeatherMapper.findBestCity(cityName) ?: WeatherCityOption(cityName, "自定义", "", 35.0, 114.0)
-                val res = weatherRepo.selectCityAndRefresh(found)
-                _weatherSourceStatus.value = res.sourceLabel
-                PenMcpToolResult(toolName, "天气已切换为 ${found.displayName}（${res.sourceLabel}）", true)
-            }
-            "start_pomodoro" -> {
-                val mins = args.optInt("minutes", 25).coerceIn(1, 120)
-                openPomodoroFocus(autoStartMinutes = mins)
-                PenMcpToolResult(toolName, "已开启 $mins 分钟全屏番茄专注", true)
-            }
-            "control_white_noise" -> {
-                val action = args.optString("action", "play")
-                if (action.equals("stop", ignoreCase = true)) {
-                    whiteNoise.stop()
-                    PenMcpToolResult(toolName, "已停止白噪音", true)
-                } else {
-                    val soundId = args.optString("sound", "rain")
-                    val type = WhiteNoiseType.entries.firstOrNull { it.id.equals(soundId, ignoreCase = true) } ?: WhiteNoiseType.RAIN
-                    whiteNoise.start(type)
-                    PenMcpToolResult(toolName, "已开始播放白噪音：${type.label}", true)
-                }
-            }
-            "adjust_device" -> {
-                val changes = mutableListOf<String>()
-                if (args.has("brightness_percent")) {
-                    val b = (args.optInt("brightness_percent", 60) / 100f).coerceIn(0.08f, 1f)
-                    setScreenBrightness(b)
-                    changes.add("亮度${(b * 100).toInt()}%")
-                }
-                if (args.has("volume_percent")) {
-                    val v = (args.optInt("volume_percent", 50) / 100f).coerceIn(0f, 1f)
-                    setMediaVolume(v)
-                    changes.add("音量${(v * 100).toInt()}%")
-                }
-                if (args.has("night_eye_care")) {
-                    val night = args.optBoolean("night_eye_care", false)
-                    prefs.setNightDimAlpha(if (night) 0.35f else 0f)
-                    changes.add(if (night) "护眼暗屏开" else "护眼暗屏关")
-                }
-                PenMcpToolResult(toolName, "设备已调节：${changes.joinToString(" / ").ifBlank { "无变更" }}", true)
-            }
-            "add_vocab_word" -> {
-                val word = args.optString("word").trim()
-                val meaning = args.optString("meaning_zh").trim()
-                if (word.isBlank() || meaning.isBlank()) return PenMcpToolResult(toolName, "单词或释义为空", false)
-                val entity = VocabWordEntity(
-                    id = "ai_${word.lowercase().replace(Regex("[^a-z0-9]"), "_")}",
-                    word = word,
-                    phonetic = args.optString("phonetic", "/$word/"),
-                    partOfSpeech = "ai.",
-                    meaningZh = meaning,
-                    mnemonicTag = "AI 收录",
-                    rootBreakdown = args.optString("root_breakdown", "AI 词根助记"),
-                    visualCue = "来自 AI 实验室生词卡片",
-                    exampleEn = args.optString("example_en", "Remember \"$word\" in context."),
-                    exampleZh = meaning,
-                    bookId = "custom",
-                    accentHex = 0xFF38BDF8
-                )
-                vocabDao.upsertWords(listOf(entity))
-                PenMcpToolResult(toolName, "已收录生词「$word」到自定义词书", true)
-            }
-            else -> PenMcpToolResult(toolName, "未知工具：$toolName", false)
         }
     }
 

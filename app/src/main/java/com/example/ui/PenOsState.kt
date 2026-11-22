@@ -3,6 +3,11 @@ package com.example.ui
 import com.example.data.local.CachedPoemEntity
 import com.example.data.local.CachedWeatherEntity
 import com.example.data.local.CalendarEventEntity
+import com.example.data.local.CustomWidgetEntity
+import com.example.data.local.DesktopSnapshotEntity
+import com.example.data.local.DrawerSlotEntity
+import com.example.data.local.MailAccountEntity
+import com.example.data.local.MailMessageEntity
 import com.example.data.local.OfflineSeedData
 import com.example.data.local.TodoItemEntity
 import com.example.data.local.VocabWordWithProgress
@@ -11,15 +16,19 @@ import com.example.data.remote.AiChatMessage
 import com.example.data.remote.WeatherCityOption
 import com.example.data.remote.WmoWeatherMapper
 import com.example.system.InstalledAppInfo
+import com.example.system.LanServerStatus
 import com.example.system.SystemDiagnostics
 import com.example.system.WhiteNoiseState
 import com.example.system.WindowRadarEntry
 
 enum class PenScreenMode {
+    SETUP,
     DESKTOP,
+    APPLE_TV_DRAWER,
     STANDBY,
     POMODORO,
     VOCAB,
+    MAIL,
     LAB,
     VAULT
 }
@@ -101,12 +110,55 @@ data class SecretTriggerState(
     val hapticPulseNonce: Int = 0
 )
 
+data class MailDraftState(
+    val to: String = "",
+    val subject: String = "",
+    val body: String = "",
+    val isAiGenerated: Boolean = false
+)
+
+data class MailUiState(
+    val accounts: List<MailAccountEntity> = emptyList(),
+    val messages: List<MailMessageEntity> = emptyList(),
+    val selectedMessageId: String? = null,
+    val isLoading: Boolean = false,
+    val isAiProcessing: Boolean = false,
+    val aiSummary: String = "",
+    val pendingDraft: MailDraftState? = null,
+    val showAccountDialog: Boolean = false
+) {
+    val unreadCount: Int
+        get() = messages.count { it.isUnread }
+}
+
+/**
+ * PenOS 5.0 Staged Harness MCP Mutation awaiting user approval in Diff Preview mode.
+ */
+data class PendingMcpChange(
+    val id: String,
+    val toolName: String,
+    val argsJson: String,
+    val humanSummary: String,
+    val selected: Boolean = true
+)
+
+/**
+ * PenOS 5.0 1GB RAM Auto-Governance state: records auto-downgraded heavy dynamic wallpaper
+ * so the user can restore it with 1 tap once memory recovers.
+ */
+data class MemoryHealthState(
+    val isDegraded: Boolean = false,
+    val previousWallpaperMode: String = "",
+    val previousMediaPath: String = "",
+    val availRamMb: Int = 420
+)
+
 data class LabState(
     val messages: List<AiChatMessage> = listOf(
         AiChatMessage(
             id = "welcome",
             role = "assistant",
-            content = "你好！我是 PenOS 桌面 AI 管家（支持国内已备案模型与 MCP 桌面直连）。你可以直接说：「切到白画廊主题」「明天 08:30 加英语早读日程」「开启 25 分钟番茄钟并播放细雨白噪音」。"
+            content = "你好！我是 PenOS 5.0 Harness AI 管家（支持 17 类声明式组件、变更预览确认与一键快照回滚）。你可以直接说：「帮我做一个晚自习一键宏+打卡计数器小组件」「把古诗词字体调大到 1.25 倍」「总结我的未读邮件并起草回复」「切换到瑞士铁路表盘」。"
         )
     ),
     val isAiLoading: Boolean = false,
@@ -130,13 +182,23 @@ data class PenOsUiState(
     val citySearchResults: List<WeatherCityOption> = WmoWeatherMapper.presetCities.take(16),
     val todos: List<TodoItemEntity> = emptyList(),
     val calendarEvents: List<CalendarEventEntity> = emptyList(),
+    val customWidgets: List<CustomWidgetEntity> = emptyList(),
+    val drawerSlots: List<DrawerSlotEntity> = emptyList(),
     val installedApps: List<InstalledAppInfo> = emptyList(),
     val vocabSession: VocabSessionState = VocabSessionState(),
+    val mail: MailUiState = MailUiState(),
+    val lanServer: LanServerStatus = LanServerStatus(),
     val lab: LabState = LabState(),
     val secretTrigger: SecretTriggerState = SecretTriggerState(),
     val diagnostics: SystemDiagnostics = SystemDiagnostics("检测中", false, false, false),
     val isVaultUnlocked: Boolean = false,
     val isSyncing: Boolean = false,
     val statusBannerMessage: String? = null,
-    val generatedSyncCode: String? = null
+    val generatedSyncCode: String? = null,
+    // PenOS 5.0 Safety, Snapshots, RAM Governance & Bypass Telemetry
+    val recentSnapshots: List<DesktopSnapshotEntity> = emptyList(),
+    val pendingMcpChanges: List<PendingMcpChange> = emptyList(),
+    val memoryHealth: MemoryHealthState = MemoryHealthState(),
+    val stockHomeBypassRemainingSec: Int = 0,
+    val gestureHapticNonce: Int = 0
 )

@@ -70,6 +70,9 @@ private val AppleLightExtendedColors = PenOsExtendedColors(
 
 val LocalPenOsColors = staticCompositionLocalOf { DarkExtendedColors }
 val LocalPoetryFontFamily = staticCompositionLocalOf<FontFamily> { NotoSerifScFontFamily }
+val LocalClockFontFamily = staticCompositionLocalOf<FontFamily> { UnifiedClockFontFamily }
+val LocalTypographyProfile = staticCompositionLocalOf { GranularTypographyProfile() }
+val LocalPenMotionTier = staticCompositionLocalOf { PenMotionTier.FAST }
 
 private val PenOsDarkColorScheme = darkColorScheme(
     primary = StandByCoral,
@@ -119,18 +122,40 @@ private val AppleLightColorScheme = lightColorScheme(
 fun PenOsTheme(
     isAppleLight: Boolean = false,
     externalPoetryFontPath: String = "",
+    typographyProfile: GranularTypographyProfile = GranularTypographyProfile(),
+    motionTier: PenMotionTier = PenMotionTier.FAST,
     content: @Composable () -> Unit
 ) {
     val extendedColors = if (isAppleLight) AppleLightExtendedColors else DarkExtendedColors
     val colorScheme = if (isAppleLight) AppleLightColorScheme else PenOsDarkColorScheme
-    val typography = if (isAppleLight) AppleGalleryTypography else PenOsTypography
-    val poetryFont = remember(externalPoetryFontPath) {
-        resolvePoetryFontFamily(externalPoetryFontPath)
+    val effectiveProfile = remember(typographyProfile, externalPoetryFontPath) {
+        if (externalPoetryFontPath.isNotBlank() && typographyProfile.poetry.externalPath.isBlank()) {
+            typographyProfile.copy(
+                poetry = typographyProfile.poetry.copy(
+                    familyKey = PenFontCatalog.FAMILY_EXTERNAL,
+                    externalPath = externalPoetryFontPath
+                )
+            )
+        } else {
+            typographyProfile
+        }
+    }
+    val typography = remember(effectiveProfile, isAppleLight) {
+        buildDynamicTypography(effectiveProfile, isAppleLight)
+    }
+    val poetryFont = remember(effectiveProfile.poetry) {
+        PenFontCatalog.resolve(effectiveProfile.poetry.familyKey, effectiveProfile.poetry.externalPath)
+    }
+    val clockFont = remember(effectiveProfile.clock) {
+        PenFontCatalog.resolve(effectiveProfile.clock.familyKey, effectiveProfile.clock.externalPath)
     }
 
     CompositionLocalProvider(
         LocalPenOsColors provides extendedColors,
-        LocalPoetryFontFamily provides poetryFont
+        LocalPoetryFontFamily provides poetryFont,
+        LocalClockFontFamily provides clockFont,
+        LocalTypographyProfile provides effectiveProfile,
+        LocalPenMotionTier provides motionTier
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
@@ -148,5 +173,11 @@ object PenTheme {
         @Composable get() = LocalPoetryFontFamily.current
 
     val clockFont: FontFamily
-        get() = UnifiedClockFontFamily
+        @Composable get() = LocalClockFontFamily.current
+
+    val typographyProfile: GranularTypographyProfile
+        @Composable get() = LocalTypographyProfile.current
+
+    val motionTier: PenMotionTier
+        @Composable get() = LocalPenMotionTier.current
 }

@@ -44,10 +44,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.system.PenDynamicWallpaperBackdrop
 import com.example.system.WhiteNoiseType
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
+import com.example.widgets.LocalClockTickFlow
 
 /**
  * Full-Screen Wallpaper Pomodoro Focus Mode (triggered by Swiping Up on Desktop / StandBy):
@@ -75,10 +78,8 @@ fun PomodoroFocusScreen(
     val pomo = state.pomodoro
     val wn = state.lab.whiteNoise
     val clockFont = PenTheme.clockFont
+    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
     var dragAccum by remember { mutableFloatStateOf(0f) }
-
-    val activePreset = state.config.activeWallpaperPresetFor(isLight)
-    val activeCustomPath = state.config.activeCustomWallpaperPathFor(isLight)
 
     Box(
         modifier = modifier
@@ -95,11 +96,10 @@ fun PomodoroFocusScreen(
             }
             .testTag("pomodoro_focus_screen")
     ) {
-        // 1. Full-bleed Theme-Specific Wallpaper Backdrop
-        SharedThemeWallpaperBackdrop(
+        // 1. Full-bleed 4-Mode Dynamic / Theme Wallpaper Backdrop
+        PenDynamicWallpaperBackdrop(
+            config = state.config,
             isAppleLight = isLight,
-            presetId = activePreset,
-            customPath = activeCustomPath,
             forFullScreenClock = true
         )
 
@@ -158,13 +158,13 @@ fun PomodoroFocusScreen(
             }
         }
 
-        // 3. Giant Centered Unified Clock
+        // 3. Giant Centered Unified Clock (decoupled 1s clock tick)
         Column(
             modifier = Modifier.align(Alignment.Center),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = state.clock.timeHHmm,
+                text = liveClock.timeHHmm,
                 style = MaterialTheme.typography.displayLarge.copy(
                     fontFamily = clockFont,
                     fontSize = 64.sp,
@@ -175,7 +175,7 @@ fun PomodoroFocusScreen(
                 color = if (isLight) Color(0xFF1D1D1F) else Color(0xFFF9FAFB)
             )
             Text(
-                text = "${state.clock.dateLabel} · 电量 ${state.clock.batteryPercent}%",
+                text = "${liveClock.dateLabel} · 电量 ${liveClock.batteryPercent}%",
                 style = MaterialTheme.typography.labelMedium,
                 color = if (isLight) Color(0xFF424245) else Color(0xFFD1D5DB)
             )

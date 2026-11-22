@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.prefs.PenConfig
 import com.example.data.remote.WmoWeatherMapper
 import com.example.ui.PenOsUiState
@@ -64,10 +65,12 @@ import com.example.ui.theme.AppleFogMist
 import com.example.ui.theme.AppleGraphite
 import com.example.ui.theme.AppleNearBlack
 import com.example.ui.theme.CarPlayGlacier
+import com.example.ui.theme.LocalPenMotionTier
 import com.example.ui.theme.PenMotion
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.StandByAmber
 import com.example.ui.theme.StandByCoral
+import com.example.widgets.LocalClockTickFlow
 import com.example.widgets.wmoWeatherIcon
 import kotlin.math.roundToInt
 
@@ -105,7 +108,9 @@ fun StandByScreen(
     val accent = if (isLightStandBy) AppleBlue else clockColor
     val badgeInk = if (isLightStandBy) AppleEmber else clockColor.copy(alpha = 0.85f)
 
-    val minuteHash = state.clock.timeHHmm.lastOrNull()?.digitToIntOrNull() ?: 0
+    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
+    val motionTier = LocalPenMotionTier.current
+    val minuteHash = liveClock.timeHHmm.lastOrNull()?.digitToIntOrNull() ?: 0
     val shiftX = ((minuteHash % 3) - 1).dp
     val shiftY = (((minuteHash / 3) % 3) - 1).dp
 
@@ -206,7 +211,7 @@ fun StandByScreen(
 
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = state.clock.timeHHmm,
+                        text = liveClock.timeHHmm,
                         style = MaterialTheme.typography.displayLarge.copy(
                             fontFamily = clockFont,
                             fontSize = 66.sp,
@@ -218,7 +223,7 @@ fun StandByScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = state.clock.secondsStr,
+                        text = liveClock.secondsStr,
                         style = MaterialTheme.typography.titleMedium.copy(fontFamily = clockFont),
                         color = secondaryInk.copy(alpha = 0.70f),
                         modifier = Modifier.padding(bottom = 10.dp)
@@ -265,7 +270,7 @@ fun StandByScreen(
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         AnimatedContent(
                             targetState = activePaneKey,
-                            transitionSpec = { PenMotion.horizontalPaneTransition(lastSlideDir) },
+                            transitionSpec = { PenMotion.horizontalPaneTransition(lastSlideDir, motionTier) },
                             label = "standby_pane_anim"
                         ) { targetKey ->
                             when (targetKey) {

@@ -54,23 +54,30 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.local.CustomWidgetEntity
 import com.example.data.local.TodoItemEntity
 import com.example.data.prefs.PenConfig
 import com.example.data.remote.WeatherCityOption
 import com.example.system.NativeWidgetHostManager
+import com.example.system.PenDynamicWallpaperBackdrop
 import com.example.system.WhiteNoiseType
 import com.example.ui.DesktopOverlay
 import com.example.ui.PenOsUiState
+import com.example.ui.theme.LocalPenMotionTier
 import com.example.ui.theme.PenMotion
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
 import com.example.widgets.AdaptiveWidgetCard
+import com.example.widgets.CustomDslWidgetCard
+import com.example.widgets.LocalClockTickFlow
 import com.example.widgets.NativeSystemWidgetCard
 import com.example.widgets.WidgetActionBridge
 import com.example.widgets.WidgetRegistry
@@ -103,8 +110,15 @@ fun DesktopScreen(
     onClearCompletedTodos: () -> Unit,
     onOpenVocab: () -> Unit,
     onEnterStandBy: () -> Unit,
+    onOpenAppleTvDrawer: () -> Unit,
     onOpenPomodoro: () -> Unit,
+    onOpenMail: () -> Unit,
+    onCycleClockStyle: () -> Unit,
     onOpenLab: () -> Unit,
+    onToggleLanServer: () -> Unit,
+    onSetMotionTier: (String) -> Unit,
+    onToggleCustomChecklist: (CustomWidgetEntity, Int, Int) -> Unit,
+    onCustomWidgetAction: (String, String) -> Unit,
     onBrightnessChange: (Float) -> Unit,
     onVolumeChange: (Float) -> Unit,
     onNightDimChange: (Float) -> Unit,
@@ -113,10 +127,22 @@ fun DesktopScreen(
     onRequestAddNativeWidget: () -> Unit,
     onAdjustNativeWidgetWidth: (Int, Int) -> Unit,
     onRemoveNativeWidget: (Int) -> Unit,
+    onGestureHaptic: () -> Unit = {},
+    onMutateCustomDsl: (CustomWidgetEntity, String) -> Unit = { _, _ -> },
+    onRunWidgetMacro: (List<String>) -> Unit = {},
+    onRefreshHttpBlock: (CustomWidgetEntity, Int, String, String) -> Unit = { _, _, _, _ -> },
+    onRollbackLatestSnapshot: () -> Unit = {},
+    onRestoreDegradedWallpaper: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val enabledPlugins = remember(state.config.enabledWidgetIds) {
         WidgetRegistry.resolveEnabled(state.config.enabledWidgetIds)
+    }
+
+    val desktopCustomWidgets = remember(state.customWidgets) {
+        state.customWidgets.filter {
+            it.placement == CustomWidgetEntity.PLACEMENT_DESKTOP || it.placement == CustomWidgetEntity.PLACEMENT_BOTH
+        }
     }
 
     val widgetActions = remember(
@@ -127,6 +153,8 @@ fun DesktopScreen(
         onOpenVocab,
         onEnterStandBy,
         onOpenPomodoro,
+        onOpenMail,
+        onCycleClockStyle,
         onOpenLab,
         onRefreshWeather,
         onToggleTodoDone
@@ -140,6 +168,8 @@ fun DesktopScreen(
             onOpenVocabStudy = onOpenVocab,
             onEnterStandBy = onEnterStandBy,
             onOpenPomodoro = onOpenPomodoro,
+            onOpenMail = onOpenMail,
+            onCycleClockStyle = onCycleClockStyle,
             onOpenLab = onOpenLab,
             onOpenControlCenter = { onOpenOverlay(DesktopOverlay.CONTROL_CENTER) },
             onOpenWeather = { onOpenOverlay(DesktopOverlay.WEATHER) },
@@ -151,21 +181,30 @@ fun DesktopScreen(
     }
 
     val isLight = PenTheme.colors.isAppleLight
+    val motionTier = LocalPenMotionTier.current
     val isNativeOnly = state.config.desktopDeckMode == PenConfig.DECK_MODE_NATIVE_ONLY
+    val swipeThresholdPx = with(LocalDensity.current) { state.config.swipeSensitivityDp.dp.toPx() }
     var verticalDragAccum by remember { mutableFloatStateOf(0f) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(state.activeOverlay) {
+            .pointerInput(state.activeOverlay, swipeThresholdPx) {
                 if (state.activeOverlay == DesktopOverlay.NONE) {
                     detectVerticalDragGestures(
                         onDragStart = { verticalDragAccum = 0f },
                         onVerticalDrag = { _, dragAmount -> verticalDragAccum += dragAmount },
                         onDragEnd = {
                             when {
-                                verticalDragAccum < -34f -> onOpenPomodoro()
-                                verticalDragAccum > 34f -> onOpenOverlay(DesktopOverlay.CONTROL_CENTER)
+                                // PenOS 5.0 Two-Stage Swipe Up with tuned sensitivity & haptic feedback
+                                verticalDragAccum < -swipeThresholdPx -> {
+                                    onGestureHaptic()
+                                    onOpenAppleTvDrawer()
+                                }
+                                verticalDragAccum > swipeThresholdPx -> {
+                                    onGestureHaptic()
+                                    onOpenOverlay(DesktopOverlay.CONTROL_CENTER)
+                                }
                             }
                             verticalDragAccum = 0f
                         }
@@ -173,15 +212,14 @@ fun DesktopScreen(
                 }
             }
     ) {
-        // 1. Independent Theme Wallpaper Backdrop (Dark vs Apple White Gallery)
-        SharedThemeWallpaperBackdrop(
+        // 1. 4-Mode Dynamic / Independent Theme Wallpaper Backdrop
+        PenDynamicWallpaperBackdrop(
+            config = state.config,
             isAppleLight = isLight,
-            presetId = state.config.activeWallpaperPresetFor(isLight),
-            customPath = state.config.activeCustomWallpaperPathFor(isLight),
             forFullScreenClock = false
         )
 
-        // 2. Main Split Layout: Left CarPlay Dock + Right Hybrid Widget Deck (1+2 Native Support)
+        // 2. Main Split Layout: Left CarPlay Dock + Right Hybrid Widget Deck (Built-in + MCP DSL + Native AppWidgets)
         Row(
             modifier = Modifier
                 .fillMaxSize()
@@ -219,9 +257,24 @@ fun DesktopScreen(
                             modifier = Modifier.width(plugin.preferredWidth)
                         )
                     }
+
+                    // Declarative MCP-authored Custom Widgets placed on Desktop!
+                    items(desktopCustomWidgets, key = { "custom_dsl_${it.id}" }) { cw ->
+                        CustomDslWidgetCard(
+                            widget = cw,
+                            onToggleChecklist = { _, bIdx, iIdx -> onToggleCustomChecklist(cw, bIdx, iIdx) },
+                            onInvokeAction = onCustomWidgetAction,
+                            onMutateDsl = onMutateCustomDsl,
+                            onRunMacro = onRunWidgetMacro,
+                            onRefreshHttpBlock = onRefreshHttpBlock,
+                            modifier = Modifier
+                                .width(cw.widthDp.dp)
+                                .fillMaxHeight()
+                        )
+                    }
                 }
 
-                // 1+2 Native Android AppWidgets (appear inline in mixed mode AND exclusively in native_only tab!)
+                // 1+2 Native Android AppWidgets
                 items(state.config.nativeWidgetIds, key = { "native_$it" }) { widgetId ->
                     val widthDp = state.config.nativeWidgetWidths[widgetId] ?: 200
                     NativeSystemWidgetCard(
@@ -254,16 +307,8 @@ fun DesktopScreen(
                                     modifier = Modifier.size(28.dp)
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "添加系统原生小组件",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "调用安卓 AppWidgetHost",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Text("添加系统原生小组件", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                                Text("调用安卓 AppWidgetHost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -271,11 +316,11 @@ fun DesktopScreen(
             }
         }
 
-        // 3. Spring-Animated Strip Overlays (Poem, Weather, Calendar, Todo, Control Center, All Apps)
+        // 3. Hardware-Tuned Strip Overlays
         AnimatedVisibility(
             visible = state.activeOverlay != DesktopOverlay.NONE,
-            enter = PenMotion.overlayEnter(),
-            exit = PenMotion.overlayExit()
+            enter = PenMotion.overlayEnter(tier = motionTier),
+            exit = PenMotion.overlayExit(tier = motionTier)
         ) {
             when (state.activeOverlay) {
                 DesktopOverlay.POEM -> PoemDetailOverlay(
@@ -315,9 +360,21 @@ fun DesktopScreen(
                     onNightDimChange = onNightDimChange,
                     onToggleWhiteNoise = onToggleWhiteNoise,
                     onToggleTheme = onToggleQuickTheme,
+                    onOpenAppleTvDrawer = {
+                        onCloseOverlay()
+                        onOpenAppleTvDrawer()
+                    },
                     onOpenPomodoro = onOpenPomodoro,
+                    onOpenMail = {
+                        onCloseOverlay()
+                        onOpenMail()
+                    },
                     onOpenLab = onOpenLab,
+                    onToggleLanServer = onToggleLanServer,
+                    onSetMotionTier = onSetMotionTier,
                     onRequestAddNativeWidget = onRequestAddNativeWidget,
+                    onRollbackLatestSnapshot = onRollbackLatestSnapshot,
+                    onRestoreDegradedWallpaper = onRestoreDegradedWallpaper,
                     onDismiss = onCloseOverlay
                 )
                 DesktopOverlay.ALL_APPS -> AllAppsOverlay(
@@ -335,11 +392,6 @@ fun DesktopScreen(
     }
 }
 
-/**
- * Shared independent Wallpaper Backdrop for BOTH themes:
- * - Apple White Gallery has its own dedicated light clock wallpapers (`img_wallpaper_gallery_light`, `pure_mist`, `warm_paper`, custom light)
- * - Dark StandBy CarPlay has its own dedicated dark wallpapers (`img_wallpaper_aurora`, `img_wallpaper_ink`, `obsidian`, custom dark)
- */
 @Composable
 fun SharedThemeWallpaperBackdrop(
     isAppleLight: Boolean,
@@ -357,115 +409,44 @@ fun SharedThemeWallpaperBackdrop(
     }
 
     if (isAppleLight) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(PenTheme.colors.canvasBackground)
-        ) {
+        Box(modifier = Modifier.fillMaxSize().background(PenTheme.colors.canvasBackground)) {
             when {
                 presetId == PenConfig.WALLPAPER_CUSTOM && customBitmap != null -> {
-                    Image(
-                        bitmap = customBitmap,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (!forFullScreenClock) {
-                        Box(modifier = Modifier.fillMaxSize().background(Color(0xAAF3F6F6)))
-                    }
+                    Image(bitmap = customBitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    if (!forFullScreenClock) Box(modifier = Modifier.fillMaxSize().background(Color(0xAAF3F6F6)))
                 }
                 presetId == PenConfig.WALLPAPER_GALLERY_LIGHT -> {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_wallpaper_gallery_light),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (!forFullScreenClock) {
-                        Box(modifier = Modifier.fillMaxSize().background(Color(0x99F3F6F6)))
-                    }
+                    Image(painter = painterResource(id = R.drawable.img_wallpaper_gallery_light), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    if (!forFullScreenClock) Box(modifier = Modifier.fillMaxSize().background(Color(0x99F3F6F6)))
                 }
                 presetId == PenConfig.WALLPAPER_WARM_PAPER -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(Color(0xFFFBF8F3), Color(0xFFF3ECE1), Color(0xFFEBE4D8))
-                                )
-                            )
-                    )
+                    Box(modifier = Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFFFBF8F3), Color(0xFFF3ECE1), Color(0xFFEBE4D8)))))
                 }
                 else -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(Color(0xFFF3F6F6), Color(0xFFEAF0F5), Color(0xFFF5F6F8))
-                                )
-                            )
-                    )
+                    Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0xFFF3F6F6), Color(0xFFEAF0F5), Color(0xFFF5F6F8)))))
                 }
             }
         }
         return
     }
 
-    // Dark StandBy CarPlay independent wallpapers
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(PenTheme.colors.obsidian)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().background(PenTheme.colors.obsidian)) {
         when {
             presetId == PenConfig.WALLPAPER_CUSTOM && customBitmap != null -> {
-                Image(
-                    bitmap = customBitmap,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+                Image(bitmap = customBitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
             presetId == PenConfig.WALLPAPER_AURORA -> {
-                Image(
-                    painter = painterResource(id = R.drawable.img_wallpaper_aurora),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+                Image(painter = painterResource(id = R.drawable.img_wallpaper_aurora), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
             presetId == PenConfig.WALLPAPER_INK -> {
-                Image(
-                    painter = painterResource(id = R.drawable.img_wallpaper_ink),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+                Image(painter = painterResource(id = R.drawable.img_wallpaper_ink), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }
             else -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(Color(0xFF07090D), Color(0xFF101521), Color(0xFF07090D))
-                            )
-                        )
-                )
+                Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0xFF07090D), Color(0xFF101521), Color(0xFF07090D)))))
             }
         }
-
         if (!forFullScreenClock) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(Color(0x9905070B), Color(0x55080B12), Color(0x7705070B))
-                        )
-                    )
-            )
+            Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0x9905070B), Color(0x55080B12), Color(0x7705070B)))))
         }
     }
 }
@@ -488,6 +469,8 @@ private fun CarPlayLeftDock(
     val isLight = colors.isAppleLight
     val isArmed = state.secretTrigger.isArmed
     val dockShape = RoundedCornerShape(colors.cardCornerRadius)
+    // Decoupled 1s tick read ONLY inside dock leaf!
+    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
 
     Surface(
         modifier = Modifier
@@ -509,7 +492,6 @@ private fun CarPlayLeftDock(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Secret Clock Trigger (Unified Clock Font across BOTH themes!)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
@@ -523,7 +505,7 @@ private fun CarPlayLeftDock(
                     .testTag("desktop_clock_trigger")
             ) {
                 Text(
-                    text = state.clock.timeHHmm,
+                    text = liveClock.timeHHmm,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontFamily = PenTheme.clockFont,
                         fontSize = 17.sp,
@@ -536,31 +518,25 @@ private fun CarPlayLeftDock(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        imageVector = if (state.clock.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.BatteryStd,
+                        imageVector = if (liveClock.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.BatteryStd,
                         contentDescription = "电量",
                         tint = if (isLight) MaterialTheme.colorScheme.onSurfaceVariant else {
-                            if (state.clock.batteryPercent > 20) colors.vocabEmerald else colors.dangerRose
+                            if (liveClock.batteryPercent > 20) colors.vocabEmerald else colors.dangerRose
                         },
                         modifier = Modifier.size(10.dp)
                     )
                     Text(
-                        text = "${state.clock.batteryPercent}%",
+                        text = "${liveClock.batteryPercent}%",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 if (isArmed) {
                     Spacer(modifier = Modifier.height(1.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(5.dp)
-                            .clip(CircleShape)
-                            .background(colors.primaryAction)
-                    )
+                    Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(colors.primaryAction))
                 }
             }
 
-            // Middle: 2x2 Action Mini Grid (Vocab, Lab, Control Center, Native Widgets Tab)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -576,7 +552,7 @@ private fun CarPlayLeftDock(
                     )
                     DockCircleButton(
                         icon = Icons.Rounded.Science,
-                        desc = "AI 与白噪音实验室",
+                        desc = "AI 与实验室",
                         tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.glacierBlue,
                         bg = if (isLight) colors.chipSurface else colors.glacierBlue.copy(alpha = 0.18f),
                         tag = "dock_lab_button",
@@ -587,7 +563,7 @@ private fun CarPlayLeftDock(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     DockCircleButton(
                         icon = Icons.Rounded.Tune,
-                        desc = "控制中心（亮度/音量）",
+                        desc = "控制中心",
                         tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.standByCoral,
                         bg = if (isLight) colors.chipSurface else colors.standByCoral.copy(alpha = 0.18f),
                         tag = "dock_control_button",
@@ -645,12 +621,7 @@ private fun DockCircleButton(
         color = bg
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = icon,
-                contentDescription = desc,
-                tint = tint,
-                modifier = Modifier.size(13.dp)
-            )
+            Icon(imageVector = icon, contentDescription = desc, tint = tint, modifier = Modifier.size(13.dp))
         }
     }
 }

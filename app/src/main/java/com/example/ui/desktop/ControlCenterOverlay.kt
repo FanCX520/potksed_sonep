@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
@@ -24,14 +25,16 @@ import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Mail
 import androidx.compose.material.icons.rounded.NightlightRound
 import androidx.compose.material.icons.rounded.Science
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.ViewCarousel
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Widgets
-import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -50,17 +53,17 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.prefs.PenConfig
 import com.example.system.SystemTakeoverHelper
 import com.example.system.WhiteNoiseType
 import com.example.ui.PenOsUiState
+import com.example.ui.theme.PenMotionTier
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
 import kotlin.math.roundToInt
 
 /**
- * Swipe-Down System Control Center tailored for 640x172 dictionary pen screen:
- * Left: Brightness + Media Volume + Night Eye-Care sliders
- * Right: White Noise quick toggles + Wi-Fi / System Settings / Lab AI / Pomodoro / Theme / Native Widget shortcuts
+ * PenOS 4.0 Swipe-Down System Control Center tailored for 640x172 landscape screen.
  */
 @Composable
 fun ControlCenterOverlay(
@@ -70,9 +73,15 @@ fun ControlCenterOverlay(
     onNightDimChange: (Float) -> Unit,
     onToggleWhiteNoise: (WhiteNoiseType) -> Unit,
     onToggleTheme: () -> Unit,
+    onOpenAppleTvDrawer: () -> Unit,
     onOpenPomodoro: () -> Unit,
+    onOpenMail: () -> Unit,
     onOpenLab: () -> Unit,
+    onToggleLanServer: () -> Unit,
+    onSetMotionTier: (String) -> Unit,
     onRequestAddNativeWidget: () -> Unit,
+    onRollbackLatestSnapshot: () -> Unit = {},
+    onRestoreDegradedWallpaper: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -80,6 +89,18 @@ fun ControlCenterOverlay(
     val isLight = colors.isAppleLight
     val dev = state.deviceControl
     val wn = state.lab.whiteNoise
+    val lan = state.lanServer
+
+    val nextMotion = when (state.config.motionTierId) {
+        PenMotionTier.FAST.id -> PenMotionTier.SPRING.id
+        PenMotionTier.SPRING.id -> PenMotionTier.NONE.id
+        else -> PenMotionTier.FAST.id
+    }
+    val motionLabel = when (state.config.motionTierId) {
+        PenMotionTier.FAST.id -> "极速60fps"
+        PenMotionTier.SPRING.id -> "轻盈弹簧"
+        else -> "零动效"
+    }
 
     Box(
         modifier = Modifier
@@ -104,10 +125,10 @@ fun ControlCenterOverlay(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Left: Real Brightness, Volume, Night Eye-Care Sliders
+                // Left: Brightness, Volume, Night Eye-Care Sliders
                 Column(
                     modifier = Modifier
-                        .weight(0.50f)
+                        .weight(0.47f)
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -116,11 +137,7 @@ fun ControlCenterOverlay(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "控制中心 · 亮度与音量",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Text("控制中心 · 亮度与音量", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                         if (!dev.canWriteSystemBrightness) {
                             Text(
                                 text = "授权系统亮度 ›",
@@ -162,10 +179,10 @@ fun ControlCenterOverlay(
                     )
                 }
 
-                // Right: Quick Tiles + White Noise Bar
+                // Right: PenOS 4.0 Quick Tiles + White Noise Bar
                 Column(
                     modifier = Modifier
-                        .weight(0.50f)
+                        .weight(0.53f)
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -175,74 +192,75 @@ fun ControlCenterOverlay(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "快捷开关 & 白噪音",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colors.linkAccent
+                            text = if (lan.isRunning) "局域网：${lan.url} · PIN ${lan.pin}" else "快捷中心 · PenOS 5.0",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (lan.isRunning) colors.vocabEmerald else colors.linkAccent,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f)
                         )
-                        IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Rounded.Close, contentDescription = "关闭控制中心", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (state.memoryHealth.isDegraded) {
+                                Surface(
+                                    shape = RoundedCornerShape(980.dp),
+                                    color = colors.standByAmber.copy(alpha = 0.22f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(980.dp))
+                                        .clickable(onClick = onRestoreDegradedWallpaper)
+                                        .testTag("control_restore_wallpaper_chip")
+                                ) {
+                                    Text(
+                                        text = "恢复壁纸",
+                                        fontSize = 9.sp,
+                                        color = colors.standByAmber,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            if (state.recentSnapshots.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(980.dp),
+                                    color = colors.dangerRose.copy(alpha = 0.18f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(980.dp))
+                                        .clickable(onClick = onRollbackLatestSnapshot)
+                                        .testTag("control_rollback_ai_chip")
+                                ) {
+                                    Text(
+                                        text = "撤销AI修改",
+                                        fontSize = 9.sp,
+                                        color = colors.dangerRose,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            IconButton(onClick = onDismiss, modifier = Modifier.size(22.dp)) {
+                                Icon(Icons.Rounded.Close, contentDescription = "关闭控制中心", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
+                            }
                         }
                     }
 
-                    // 2 rows x 3 quick tiles
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        ControlQuickTile(
-                            icon = Icons.Rounded.Wifi,
-                            label = if (state.clock.isWifiConnected) "Wi-Fi 已连" else "Wi-Fi 设置",
-                            active = state.clock.isWifiConnected,
-                            modifier = Modifier.weight(1f),
-                            onClick = { SystemTakeoverHelper.openWifiSettings(context) }
-                        )
-                        ControlQuickTile(
-                            icon = Icons.Rounded.Timer,
-                            label = "全屏番茄",
-                            active = state.pomodoro.isRunning,
-                            modifier = Modifier.weight(1f),
-                            onClick = onOpenPomodoro
-                        )
-                        ControlQuickTile(
-                            icon = Icons.Rounded.Science,
-                            label = "AI 实验室",
-                            active = false,
-                            modifier = Modifier.weight(1f),
-                            onClick = onOpenLab
-                        )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        ControlQuickTile(Icons.Rounded.Language, if (lan.isRunning) "局域网开" else "局域网后台", lan.isRunning, false, Modifier.weight(1f), onToggleLanServer)
+                        ControlQuickTile(Icons.Rounded.ViewCarousel, "TV抽屉", false, false, Modifier.weight(1f), onOpenAppleTvDrawer)
+                        ControlQuickTile(Icons.Rounded.Mail, if (state.mail.unreadCount > 0) "邮箱(${state.mail.unreadCount})" else "笔端邮箱", false, state.mail.unreadCount > 0, Modifier.weight(1f), onOpenMail)
+                        ControlQuickTile(Icons.Rounded.Timer, "全屏番茄", state.pomodoro.isRunning, false, Modifier.weight(1f), onOpenPomodoro)
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        ControlQuickTile(
-                            icon = if (isLight) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-                            label = if (isLight) "切暗黑" else "切白画廊",
-                            active = isLight,
-                            modifier = Modifier.weight(1f),
-                            onClick = onToggleTheme
-                        )
-                        ControlQuickTile(
-                            icon = Icons.Rounded.Widgets,
-                            label = "+原生组件",
-                            active = state.config.nativeWidgetIds.isNotEmpty(),
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                onDismiss()
-                                onRequestAddNativeWidget()
-                            }
-                        )
-                        ControlQuickTile(
-                            icon = Icons.Rounded.Settings,
-                            label = "系统设置",
-                            active = false,
-                            modifier = Modifier.weight(1f),
-                            onClick = { SystemTakeoverHelper.openSystemSettings(context) }
-                        )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        ControlQuickTile(Icons.Rounded.Speed, motionLabel, state.config.motionTierId == PenMotionTier.FAST.id, false, Modifier.weight(1f)) { onSetMotionTier(nextMotion) }
+                        ControlQuickTile(if (isLight) Icons.Rounded.DarkMode else Icons.Rounded.LightMode, if (isLight) "切暗黑" else "切白画廊", isLight, false, Modifier.weight(1f), onToggleTheme)
+                        ControlQuickTile(Icons.Rounded.Science, "AI实验室", false, false, Modifier.weight(1f), onOpenLab)
+                        ControlQuickTile(Icons.Rounded.Widgets, "+原生件", state.config.nativeWidgetIds.isNotEmpty(), false, Modifier.weight(1f)) {
+                            onDismiss()
+                            onRequestAddNativeWidget()
+                        }
                     }
 
-                    // Offline DSP White Noise quick chips
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         items(WhiteNoiseType.entries) { type ->
                             val playing = wn.isPlaying && wn.activeType == type
@@ -324,38 +342,52 @@ private fun ControlQuickTile(
     icon: ImageVector,
     label: String,
     active: Boolean,
+    showRedDot: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val colors = PenTheme.colors
     Surface(
         modifier = modifier
-            .height(32.dp)
+            .height(30.dp)
             .springPressScale(onClick = onClick)
-            .clip(RoundedCornerShape(10.dp)),
-        shape = RoundedCornerShape(10.dp),
+            .clip(RoundedCornerShape(9.dp)),
+        shape = RoundedCornerShape(9.dp),
         color = if (active) colors.primaryAction else colors.chipSurface
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(13.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium),
-                color = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1
-            )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(modifier = Modifier.width(3.dp))
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Medium),
+                    color = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+            }
+            if (showRedDot) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 3.dp, end = 4.dp)
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFEF4444))
+                        .testTag("control_mail_unread_dot")
+                )
+            }
         }
     }
 }
