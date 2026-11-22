@@ -201,10 +201,14 @@ fun Modifier.springPressScale(
     onClick: () -> Unit
 ): Modifier = composed {
     val tier = LocalPenMotionTier.current
+    val zeroOverdraw = LocalZeroOverdraw.current
+    if (!enabled || tier == PenMotionTier.NONE || zeroOverdraw) {
+        return@composed this.clickable(enabled = enabled, onClick = onClick)
+    }
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed && enabled && tier != PenMotionTier.NONE) pressedScale else 1f,
+        targetValue = if (isPressed) pressedScale else 1f,
         animationSpec = when (tier) {
             PenMotionTier.NONE -> snap()
             PenMotionTier.FAST -> tween(durationMillis = 80, easing = PenMotion.EaseOutExpo)

@@ -82,6 +82,7 @@ fun ControlCenterOverlay(
     onRequestAddNativeWidget: () -> Unit,
     onRollbackLatestSnapshot: () -> Unit = {},
     onRestoreDegradedWallpaper: () -> Unit = {},
+    onToggleDesktopEngine: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -192,7 +193,7 @@ fun ControlCenterOverlay(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (lan.isRunning) "局域网：${lan.url} · PIN ${lan.pin}" else "快捷中心 · PenOS 5.0",
+                            text = if (lan.isRunning) "局域网：${lan.url} · PIN ${lan.pin}" else "快捷中心 · PenOS 5.5",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (lan.isRunning) colors.vocabEmerald else colors.linkAccent,
                             maxLines = 1,
@@ -202,6 +203,23 @@ fun ControlCenterOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            val isNativeEngine = state.config.desktopEngineMode == PenConfig.ENGINE_NATIVE_TURBO
+                            Surface(
+                                shape = RoundedCornerShape(980.dp),
+                                color = if (isNativeEngine) colors.vocabEmerald.copy(alpha = 0.22f) else colors.primaryAction.copy(alpha = 0.22f),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(980.dp))
+                                    .clickable(onClick = onToggleDesktopEngine)
+                                    .testTag("control_engine_toggle_chip")
+                            ) {
+                                Text(
+                                    text = if (isNativeEngine) "引擎:原生极速" else "引擎:Compose",
+                                    fontSize = 9.sp,
+                                    color = if (isNativeEngine) colors.vocabEmerald else colors.primaryAction,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                             if (state.memoryHealth.isDegraded) {
                                 Surface(
                                     shape = RoundedCornerShape(980.dp),
@@ -238,7 +256,12 @@ fun ControlCenterOverlay(
                                     )
                                 }
                             }
-                            IconButton(onClick = onDismiss, modifier = Modifier.size(22.dp)) {
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .testTag("control_close_button")
+                            ) {
                                 Icon(Icons.Rounded.Close, contentDescription = "关闭控制中心", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(15.dp))
                             }
                         }

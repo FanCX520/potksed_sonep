@@ -8,7 +8,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,9 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +72,7 @@ import com.example.ui.DesktopOverlay
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.LocalPenMotionTier
 import com.example.ui.theme.PenMotion
+import com.example.ui.theme.PenMotionTier
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
 import com.example.widgets.AdaptiveWidgetCard
@@ -82,6 +82,7 @@ import com.example.widgets.NativeSystemWidgetCard
 import com.example.widgets.WidgetActionBridge
 import com.example.widgets.WidgetRegistry
 import java.io.File
+import kotlin.math.abs
 
 @Composable
 fun DesktopScreen(
@@ -133,6 +134,7 @@ fun DesktopScreen(
     onRefreshHttpBlock: (CustomWidgetEntity, Int, String, String) -> Unit = { _, _, _, _ -> },
     onRollbackLatestSnapshot: () -> Unit = {},
     onRestoreDegradedWallpaper: () -> Unit = {},
+    onToggleDesktopEngine: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val enabledPlugins = remember(state.config.enabledWidgetIds) {
@@ -183,49 +185,79 @@ fun DesktopScreen(
     val isLight = PenTheme.colors.isAppleLight
     val motionTier = LocalPenMotionTier.current
     val isNativeOnly = state.config.desktopDeckMode == PenConfig.DECK_MODE_NATIVE_ONLY
+    val isNativeTurboEngine = state.config.desktopEngineMode == PenConfig.ENGINE_NATIVE_TURBO
     val swipeThresholdPx = with(LocalDensity.current) { state.config.swipeSensitivityDp.dp.toPx() }
-    var verticalDragAccum by remember { mutableFloatStateOf(0f) }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .pointerInput(state.activeOverlay, swipeThresholdPx) {
-                if (state.activeOverlay == DesktopOverlay.NONE) {
-                    detectVerticalDragGestures(
-                        onDragStart = { verticalDragAccum = 0f },
-                        onVerticalDrag = { _, dragAmount -> verticalDragAccum += dragAmount },
-                        onDragEnd = {
-                            when {
-                                // PenOS 5.0 Two-Stage Swipe Up with tuned sensitivity & haptic feedback
-                                verticalDragAccum < -swipeThresholdPx -> {
-                                    onGestureHaptic()
-                                    onOpenAppleTvDrawer()
+    Box(modifier = modifier.fillMaxSize()) {
+        if (isNativeTurboEngine) {
+            // Engine A (MT6582 Default): Pure Native Android View Desktop (0 Compose scroll overhead, 1.0x overdraw)
+            NativeTurboDesktopView(
+                state = state,
+                nativeWidgetHost = nativeWidgetHost,
+                onClockTap = onClockTap,
+                onClockLongPress = onClockLongPress,
+                onToggleQuickTheme = onToggleQuickTheme,
+                onLaunchScanApp = onLaunchScanApp,
+                onLaunchApp = onLaunchApp,
+                onOpenOverlay = onOpenOverlay,
+                onOpenVocab = onOpenVocab,
+                onEnterStandBy = onEnterStandBy,
+                onOpenAppleTvDrawer = onOpenAppleTvDrawer,
+                onOpenMail = onOpenMail,
+                onCycleClockStyle = onCycleClockStyle,
+                onOpenLab = onOpenLab,
+                onSetDeckMode = onSetDeckMode,
+                onRequestAddNativeWidget = onRequestAddNativeWidget,
+                onGestureHaptic = onGestureHaptic,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Engine B: Deep-Optimized Full Compose Desktop with non-blocking direction-locked vertical swipe
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(state.activeOverlay, swipeThresholdPx) {
+                        if (state.activeOverlay == DesktopOverlay.NONE) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                var totalDx = 0f
+                                var totalDy = 0f
+                                var prevPos = down.position
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) break
+                                    totalDx += change.position.x - prevPos.x
+                                    totalDy += change.position.y - prevPos.y
+                                    prevPos = change.position
                                 }
-                                verticalDragAccum > swipeThresholdPx -> {
-                                    onGestureHaptic()
-                                    onOpenOverlay(DesktopOverlay.CONTROL_CENTER)
+                                if (abs(totalDy) >= swipeThresholdPx && abs(totalDy) > abs(totalDx) * 1.35f) {
+                                    if (totalDy < 0f) {
+                                        onGestureHaptic()
+                                        onOpenAppleTvDrawer()
+                                    } else {
+                                        onGestureHaptic()
+                                        onOpenOverlay(DesktopOverlay.CONTROL_CENTER)
+                                    }
                                 }
                             }
-                            verticalDragAccum = 0f
                         }
-                    )
-                }
-            }
-    ) {
-        // 1. 4-Mode Dynamic / Independent Theme Wallpaper Backdrop
-        PenDynamicWallpaperBackdrop(
-            config = state.config,
-            isAppleLight = isLight,
-            forFullScreenClock = false
-        )
+                    }
+            ) {
+                // 1. 4-Mode Dynamic / Independent Theme Wallpaper Backdrop
+                PenDynamicWallpaperBackdrop(
+                    config = state.config,
+                    isAppleLight = isLight,
+                    forFullScreenClock = false
+                )
 
-        // 2. Main Split Layout: Left CarPlay Dock + Right Hybrid Widget Deck (Built-in + MCP DSL + Native AppWidgets)
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+                // 2. Main Split Layout: Left CarPlay Dock + Right Hybrid Widget Deck
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
             CarPlayLeftDock(
                 state = state,
                 isNativeOnly = isNativeOnly,
@@ -314,14 +346,12 @@ fun DesktopScreen(
                     }
                 }
             }
+            }
+            }
         }
 
-        // 3. Hardware-Tuned Strip Overlays
-        AnimatedVisibility(
-            visible = state.activeOverlay != DesktopOverlay.NONE,
-            enter = PenMotion.overlayEnter(tier = motionTier),
-            exit = PenMotion.overlayExit(tier = motionTier)
-        ) {
+        // 3. Hardware-Tuned Strip Overlays (shared by BOTH Native Turbo & Full Compose engines!)
+        val renderActiveOverlay: @Composable () -> Unit = {
             when (state.activeOverlay) {
                 DesktopOverlay.POEM -> PoemDetailOverlay(
                     state = state,
@@ -375,6 +405,7 @@ fun DesktopScreen(
                     onRequestAddNativeWidget = onRequestAddNativeWidget,
                     onRollbackLatestSnapshot = onRollbackLatestSnapshot,
                     onRestoreDegradedWallpaper = onRestoreDegradedWallpaper,
+                    onToggleDesktopEngine = onToggleDesktopEngine,
                     onDismiss = onCloseOverlay
                 )
                 DesktopOverlay.ALL_APPS -> AllAppsOverlay(
@@ -387,6 +418,20 @@ fun DesktopScreen(
                     onDismiss = onCloseOverlay
                 )
                 DesktopOverlay.NONE -> Unit
+            }
+        }
+
+        if (motionTier == PenMotionTier.NONE) {
+            if (state.activeOverlay != DesktopOverlay.NONE) {
+                renderActiveOverlay()
+            }
+        } else {
+            AnimatedVisibility(
+                visible = state.activeOverlay != DesktopOverlay.NONE,
+                enter = PenMotion.overlayEnter(tier = motionTier),
+                exit = PenMotion.overlayExit(tier = motionTier)
+            ) {
+                renderActiveOverlay()
             }
         }
     }

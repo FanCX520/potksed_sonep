@@ -281,7 +281,7 @@ class PenHarnessExecutor(
         val wid = args.optString("widget_id")
         val enable = args.optBoolean("enable", true)
         val cur = prefs.currentConfig().enabledWidgetIds.toMutableList()
-        if (enable && !cur.contains(wid) && PenConfig.DEFAULT_WIDGET_ORDER.contains(wid)) {
+        if (enable && !cur.contains(wid) && PenConfig.ALL_WIDGET_IDS.contains(wid)) {
             cur.add(wid)
             prefs.setEnabledWidgets(cur)
         } else if (!enable && cur.contains(wid) && cur.size > 1) {

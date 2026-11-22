@@ -149,6 +149,8 @@ class PenDesktopSnapshotManager(
             .put("designStyle", cfg.designStyle)
             .put("standByStyleMode", cfg.standByStyleMode)
             .put("desktopDeckMode", cfg.desktopDeckMode)
+            .put("desktopEngineMode", cfg.desktopEngineMode)
+            .put("zeroOverdrawMode", cfg.zeroOverdrawMode)
             .put("darkWallpaperPresetId", cfg.darkWallpaperPresetId)
             .put("lightWallpaperPresetId", cfg.lightWallpaperPresetId)
             .put("dynamicWallpaperMode", cfg.dynamicWallpaperMode)
@@ -229,6 +231,10 @@ class PenDesktopSnapshotManager(
             app.optString("designStyle").takeIf { it.isNotBlank() }?.let { prefs.setDesignStyle(it) }
             app.optString("standByStyleMode").takeIf { it.isNotBlank() }?.let { prefs.setStandByStyleMode(it) }
             app.optString("desktopDeckMode").takeIf { it.isNotBlank() }?.let { prefs.setDesktopDeckMode(it) }
+            app.optString("desktopEngineMode").takeIf { it.isNotBlank() }?.let { prefs.setDesktopEngineMode(it) }
+            if (app.has("zeroOverdrawMode")) {
+                prefs.setZeroOverdrawMode(app.optBoolean("zeroOverdrawMode", true))
+            }
             app.optString("darkWallpaperPresetId").takeIf { it.isNotBlank() }?.let {
                 prefs.setWallpaperForTheme(isLight = false, presetId = it)
             }
@@ -256,7 +262,7 @@ class PenDesktopSnapshotManager(
             }
             app.optJSONArray("enabledWidgetIds")?.let { arr ->
                 val list = (0 until arr.length()).mapNotNull { i ->
-                    arr.optString(i).takeIf { it.isNotBlank() && PenConfig.DEFAULT_WIDGET_ORDER.contains(it) }
+                    arr.optString(i).takeIf { it.isNotBlank() && PenConfig.ALL_WIDGET_IDS.contains(it) }
                 }
                 if (list.isNotEmpty()) prefs.setEnabledWidgets(list)
             }

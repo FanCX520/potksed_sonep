@@ -837,6 +837,37 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setDesktopEngineMode(mode: String) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setDesktopEngineMode(mode)
+            val label = if (mode == PenConfig.ENGINE_COMPOSE_FULL) {
+                "完整 Compose 桌面（已深度优化）"
+            } else {
+                "原生 View 极速桌面（MT6582 推荐）"
+            }
+            showToast("主屏引擎已切换：$label")
+        }
+    }
+
+    fun toggleDesktopEngineMode() {
+        val current = uiState.value.config.desktopEngineMode
+        val next = if (current == PenConfig.ENGINE_NATIVE_TURBO) {
+            PenConfig.ENGINE_COMPOSE_FULL
+        } else {
+            PenConfig.ENGINE_NATIVE_TURBO
+        }
+        setDesktopEngineMode(next)
+    }
+
+    fun setZeroOverdrawMode(enabled: Boolean) {
+        onUserInteraction()
+        viewModelScope.launch {
+            prefs.setZeroOverdrawMode(enabled)
+            showToast(if (enabled) "已开启零过绘制纯色极速视觉" else "已切回半透明轻质感视觉")
+        }
+    }
+
     fun setDynamicWallpaperMode(mode: String, proceduralStyle: String? = null, mediaPath: String? = null) {
         onUserInteraction()
         viewModelScope.launch {

@@ -69,6 +69,7 @@ fun SetupAssistantScreen(
     onToggleLanServer: () -> Unit,
     onOpenMailSetup: () -> Unit,
     onComplete: () -> Unit,
+    onSelectDesktopEngineMode: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = MaterialTheme.colorScheme
@@ -97,7 +98,7 @@ fun SetupAssistantScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "PenOS 4.0 设置向导",
+                        text = "PenOS 5.5 设置向导",
                         style = MaterialTheme.typography.labelLarge,
                         color = colors.primary,
                         fontWeight = FontWeight.Bold
@@ -138,7 +139,8 @@ fun SetupAssistantScreen(
                     1 -> StepThemeAndMotion(
                         config = state.config,
                         onSelectDesignStyle = onSelectDesignStyle,
-                        onSelectMotionTier = onSelectMotionTier
+                        onSelectMotionTier = onSelectMotionTier,
+                        onSelectDesktopEngineMode = onSelectDesktopEngineMode
                     )
                     2 -> StepClockAndWallpaper(
                         config = state.config,
@@ -217,7 +219,7 @@ fun SetupAssistantScreen(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = if (isLast) "开始使用 PenOS 4.0" else "继续",
+                                text = if (isLast) "开始使用 PenOS 5.5" else "继续",
                                 fontSize = 10.sp,
                                 color = colors.onPrimary,
                                 fontWeight = FontWeight.Bold
@@ -255,13 +257,13 @@ private fun StepWelcome() {
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                text = "你好，欢迎来到 PenOS 4.0",
+                text = "你好，欢迎来到 PenOS 5.5（MT6582 极速版）",
                 style = MaterialTheme.typography.titleMedium,
                 color = colors.onBackground,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "专为词典笔横屏打造的 60fps 极速桌面：支持 Apple TV 上滑自定义抽屉、DeepSeek Harness 全量 MCP 写组件、局域网网页控制台、4 模式动态壁纸、6 样式时钟、5 通道全局字体与 IMAP/SMTP 邮箱。",
+                text = "专为 1GHz 词典笔横屏打造：默认原生 View 极速主屏 + 零过绘制纯色轻质感 + 首屏 3 张高频卡片，随时一键切换完整 Compose 桌面，完整保留 AI MCP、局域网控制台与邮箱。",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant,
                 lineHeight = 14.sp,
@@ -276,35 +278,44 @@ private fun StepWelcome() {
 private fun StepThemeAndMotion(
     config: PenConfig,
     onSelectDesignStyle: (String) -> Unit,
-    onSelectMotionTier: (String) -> Unit
+    onSelectMotionTier: (String) -> Unit,
+    onSelectDesktopEngineMode: (String) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Icon(Icons.Rounded.Palette, contentDescription = null, tint = colors.primary, modifier = Modifier.size(14.dp))
-                Text("1. 选择桌面美学风格", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("1. 桌面引擎与风格", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SetupChoiceChip("暗黑 StandBy", !config.isAppleLightDesktop(), Modifier.weight(1f)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                SetupChoiceChip("原生极速(推荐)", config.desktopEngineMode == PenConfig.ENGINE_NATIVE_TURBO, Modifier.weight(1f)) {
+                    onSelectDesktopEngineMode(PenConfig.ENGINE_NATIVE_TURBO)
+                }
+                SetupChoiceChip("完整Compose", config.desktopEngineMode == PenConfig.ENGINE_COMPOSE_FULL, Modifier.weight(1f)) {
+                    onSelectDesktopEngineMode(PenConfig.ENGINE_COMPOSE_FULL)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                SetupChoiceChip("暗黑曜石", !config.isAppleLightDesktop(), Modifier.weight(1f)) {
                     onSelectDesignStyle(PenConfig.STYLE_DARK_STANDBY)
                 }
-                SetupChoiceChip("Apple 白画廊", config.isAppleLightDesktop(), Modifier.weight(1f)) {
+                SetupChoiceChip("Apple 雾白", config.isAppleLightDesktop(), Modifier.weight(1f)) {
                     onSelectDesignStyle(PenConfig.STYLE_APPLE_LIGHT)
                 }
             }
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text("2. 动效流畅度（已解耦 1 秒全局重绘）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("2. 动效流畅度（MT6582 推荐零动效）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                SetupChoiceChip("零动效", config.motionTierId == PenMotionTier.NONE.id, Modifier.weight(1f)) {
+                    onSelectMotionTier(PenMotionTier.NONE.id)
+                }
                 SetupChoiceChip("极速 60fps", config.motionTierId == PenMotionTier.FAST.id, Modifier.weight(1f)) {
                     onSelectMotionTier(PenMotionTier.FAST.id)
                 }
                 SetupChoiceChip("轻盈弹簧", config.motionTierId == PenMotionTier.SPRING.id, Modifier.weight(1f)) {
                     onSelectMotionTier(PenMotionTier.SPRING.id)
-                }
-                SetupChoiceChip("零动效", config.motionTierId == PenMotionTier.NONE.id, Modifier.weight(1f)) {
-                    onSelectMotionTier(PenMotionTier.NONE.id)
                 }
             }
         }

@@ -173,6 +173,24 @@ fun StaticThemeWallpaperBackdrop(
     customPath: String,
     forFullScreenClock: Boolean = false
 ) {
+    val zeroOverdraw = PenTheme.zeroOverdraw
+    if (isAppleLight && (presetId == PenConfig.WALLPAPER_PURE_MIST || (zeroOverdraw && presetId != PenConfig.WALLPAPER_CUSTOM && presetId != PenConfig.WALLPAPER_GALLERY_LIGHT && presetId != PenConfig.WALLPAPER_WARM_PAPER))) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(PenTheme.colors.canvasBackground)
+        )
+        return
+    }
+    if (!isAppleLight && (presetId == PenConfig.WALLPAPER_OBSIDIAN || (zeroOverdraw && presetId != PenConfig.WALLPAPER_CUSTOM && presetId != PenConfig.WALLPAPER_AURORA && presetId != PenConfig.WALLPAPER_INK))) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(PenTheme.colors.obsidian)
+        )
+        return
+    }
+
     val customBitmap = remember(customPath) {
         BitmapDecodeCache.decodeSampled(customPath, maxWidthPx = 720, maxHeightPx = 320)
     }
@@ -255,13 +273,7 @@ fun StaticThemeWallpaperBackdrop(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            else -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Brush.horizontalGradient(listOf(Color(0xFF06080D), Color(0xFF0E1522), Color(0xFF06080D))))
-                )
-            }
+            else -> Unit
         }
         Box(
             modifier = Modifier

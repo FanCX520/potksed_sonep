@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.compose.runtime.Immutable
 import com.example.data.local.CachedPoemEntity
 import com.example.data.local.CachedWeatherEntity
 import com.example.data.local.CalendarEventEntity
@@ -43,6 +44,7 @@ enum class DesktopOverlay {
     ALL_APPS
 }
 
+@Immutable
 data class ClockTelemetryState(
     val timeHHmm: String = "08:30",
     val secondsStr: String = "00",
@@ -55,6 +57,7 @@ data class ClockTelemetryState(
     val totalRamMb: Int = 1024
 )
 
+@Immutable
 data class PomodoroState(
     val totalSeconds: Int = 25 * 60,
     val remainingSeconds: Int = 25 * 60,
@@ -73,12 +76,14 @@ data class PomodoroState(
         get() = if (totalSeconds <= 0) 0f else (1f - remainingSeconds.toFloat() / totalSeconds.toFloat()).coerceIn(0f, 1f)
 }
 
+@Immutable
 data class DeviceControlState(
     val brightnessFraction: Float = 0.55f,
     val mediaVolumeFraction: Float = 0.5f,
     val canWriteSystemBrightness: Boolean = true
 )
 
+@Immutable
 data class VocabQuizOption(
     val wordId: String,
     val meaningZh: String,
@@ -87,6 +92,7 @@ data class VocabQuizOption(
     val isCorrect: Boolean
 )
 
+@Immutable
 data class VocabSessionState(
     val activeBook: String = "highschool",
     val currentWord: VocabWordWithProgress? = null,
@@ -104,12 +110,14 @@ data class VocabSessionState(
     val slashEffectNonce: Int = 0
 )
 
+@Immutable
 data class SecretTriggerState(
     val tapCount: Int = 0,
     val isArmed: Boolean = false,
     val hapticPulseNonce: Int = 0
 )
 
+@Immutable
 data class MailDraftState(
     val to: String = "",
     val subject: String = "",
@@ -117,6 +125,7 @@ data class MailDraftState(
     val isAiGenerated: Boolean = false
 )
 
+@Immutable
 data class MailUiState(
     val accounts: List<MailAccountEntity> = emptyList(),
     val messages: List<MailMessageEntity> = emptyList(),
@@ -134,6 +143,7 @@ data class MailUiState(
 /**
  * PenOS 5.0 Staged Harness MCP Mutation awaiting user approval in Diff Preview mode.
  */
+@Immutable
 data class PendingMcpChange(
     val id: String,
     val toolName: String,
@@ -146,6 +156,7 @@ data class PendingMcpChange(
  * PenOS 5.0 1GB RAM Auto-Governance state: records auto-downgraded heavy dynamic wallpaper
  * so the user can restore it with 1 tap once memory recovers.
  */
+@Immutable
 data class MemoryHealthState(
     val isDegraded: Boolean = false,
     val previousWallpaperMode: String = "",
@@ -153,12 +164,13 @@ data class MemoryHealthState(
     val availRamMb: Int = 420
 )
 
+@Immutable
 data class LabState(
     val messages: List<AiChatMessage> = listOf(
         AiChatMessage(
             id = "welcome",
             role = "assistant",
-            content = "你好！我是 PenOS 5.0 Harness AI 管家（支持 17 类声明式组件、变更预览确认与一键快照回滚）。你可以直接说：「帮我做一个晚自习一键宏+打卡计数器小组件」「把古诗词字体调大到 1.25 倍」「总结我的未读邮件并起草回复」「切换到瑞士铁路表盘」。"
+            content = "你好！我是 PenOS 5.5 Harness AI 管家（支持 MT6582 原生极速双引擎、17 类声明式组件、变更预览确认与一键快照回滚）。你可以直接说：「帮我做一个晚自习一键宏+打卡计数器小组件」「把古诗词字体调大到 1.25 倍」「总结我的未读邮件并起草回复」「切换到瑞士铁路表盘」。"
         )
     ),
     val isAiLoading: Boolean = false,
@@ -167,6 +179,7 @@ data class LabState(
     val inspectedPackageActivities: List<String> = emptyList()
 )
 
+@Immutable
 data class PenOsUiState(
     val mode: PenScreenMode = PenScreenMode.DESKTOP,
     val activeOverlay: DesktopOverlay = DesktopOverlay.NONE,

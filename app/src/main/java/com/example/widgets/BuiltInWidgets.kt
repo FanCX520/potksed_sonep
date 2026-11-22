@@ -72,6 +72,7 @@ fun AdaptiveWidgetCard(
 ) {
     val penColors = PenTheme.colors
     val isLight = penColors.isAppleLight
+    val zeroOverdraw = PenTheme.zeroOverdraw
     val shape = RoundedCornerShape(penColors.cardCornerRadius)
     val surfaceColor = when {
         isLight && useSecondaryLightTint -> penColors.secondaryTintCard
@@ -82,8 +83,7 @@ fun AdaptiveWidgetCard(
     Surface(
         modifier = modifier
             .fillMaxHeight()
-            .then(if (onClick != null) Modifier.springPressScale(pressedScale = 0.965f, onClick = onClick) else Modifier)
-            .clip(shape),
+            .then(if (onClick != null) Modifier.springPressScale(pressedScale = 0.965f, onClick = onClick) else Modifier),
         shape = shape,
         color = surfaceColor,
         border = border,
@@ -92,7 +92,7 @@ fun AdaptiveWidgetCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .then(if (!isLight && darkAccentBrush != null) Modifier.background(darkAccentBrush) else Modifier)
+                .then(if (!zeroOverdraw && !isLight && darkAccentBrush != null) Modifier.background(darkAccentBrush) else Modifier)
                 .padding(horizontal = 13.dp, vertical = 10.dp)
         ) {
             content()

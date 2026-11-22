@@ -1,21 +1,40 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# PenOS 5.5 R8 / ProGuard Rules (MT6582 1GHz Optimized Release)
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keepattributes Signature,InnerClasses,EnclosingMethod,RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Android components declared in AndroidManifest.xml
+-keep public class com.example.PenOsApplication { *; }
+-keep public class com.example.MainActivity { *; }
+-keep public class com.example.system.PenKeepAliveService { *; }
+-keep public class com.example.system.PenAntiLockAccessibilityService { *; }
+-keep public class com.example.system.PenBootReceiver { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep Room Database, Entities & DAOs
+-keep class * extends androidx.room.RoomDatabase { *; }
+-keep @androidx.room.Entity class * { *; }
+-keep @androidx.room.Dao interface * { *; }
+-keep class com.example.data.local.** { *; }
+
+# Keep Moshi & Retrofit DTOs / Interfaces (JinrishiciApi & VocabSyncManager)
+-keep class com.example.data.remote.** { *; }
+-keep @com.squareup.moshi.JsonClass class * { *; }
+-keepclasseswithmembers class * {
+    @retrofit2.http.* <methods>;
+}
+-keep,allowobfuscation,allowshrinking interface retrofit2.Call
+-keep,allowobfuscation,allowshrinking class retrofit2.Response
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
+
+# Keep OkHttp / Conscrypt / Kotlin reflection warnings clean
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn javax.annotation.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+-dontwarn retrofit2.**
+
+# Keep Preferences & State Data Models
+-keep class com.example.data.prefs.** { *; }
+-keep class com.example.ui.theme.FontSlotSpec { *; }
+-keep class com.example.ui.theme.GranularTypographyProfile { *; }

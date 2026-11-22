@@ -121,6 +121,8 @@ fun PenLabScreen(
     onSetGestureHapticsEnabled: (Boolean) -> Unit = {},
     onSetMailAutoSyncEnabled: (Boolean) -> Unit = {},
     onRestoreDegradedWallpaper: () -> Unit = {},
+    onSetDesktopEngineMode: (String) -> Unit = {},
+    onSetZeroOverdrawMode: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
@@ -262,7 +264,9 @@ fun PenLabScreen(
                         onSetSwipeSensitivityDp = onSetSwipeSensitivityDp,
                         onSetGestureHapticsEnabled = onSetGestureHapticsEnabled,
                         onSetMailAutoSyncEnabled = onSetMailAutoSyncEnabled,
-                        onRestoreDegradedWallpaper = onRestoreDegradedWallpaper
+                        onRestoreDegradedWallpaper = onRestoreDegradedWallpaper,
+                        onSetDesktopEngineMode = onSetDesktopEngineMode,
+                        onSetZeroOverdrawMode = onSetZeroOverdrawMode
                     )
                     4 -> LabWhiteNoiseTab(
                         state = state,

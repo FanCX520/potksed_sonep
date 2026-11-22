@@ -2,6 +2,7 @@ package com.example.data.prefs
 
 import android.content.Context
 import android.os.Build
+import androidx.compose.runtime.Immutable
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -23,6 +24,7 @@ import java.security.SecureRandom
 
 private val Context.penDataStore: DataStore<Preferences> by preferencesDataStore(name = "penos_prefs")
 
+@Immutable
 data class SavedCityEntry(
     val name: String,
     val region: String,
@@ -31,6 +33,7 @@ data class SavedCityEntry(
     val lon: Double
 )
 
+@Immutable
 data class AiPreset(
     val id: String,
     val name: String,
@@ -42,6 +45,7 @@ data class AiPreset(
  * PenOS 4.0 Multi-API AI Profile: lets the user store & switch between multiple AI providers/models
  * (DeepSeek-V3, DeepSeek-R1, GLM-4, Qwen, Kimi, SiliconFlow, Custom LAN Ollama) with 1 tap.
  */
+@Immutable
 data class AiApiProfile(
     val id: String,
     val name: String,
@@ -55,9 +59,10 @@ data class AiApiProfile(
     fun toAiPreset(): AiPreset = AiPreset(id, name, systemPrompt, enableMcpTools)
 }
 
+@Immutable
 data class MultiClockConfig(
-    val style: String = STYLE_BLOOM_ANALOG,
-    val shape: String = SHAPE_SCALLOP,
+    val style: String = STYLE_KDE_MINIMAL,
+    val shape: String = SHAPE_SQUIRCLE,
     val showSeconds: Boolean = true,
     val accentHex: Long = 0xFFFF6B4A
 ) {
@@ -85,6 +90,7 @@ data class MultiClockConfig(
     }
 }
 
+@Immutable
 data class PenConfig(
     val designStyle: String = STYLE_DARK_STANDBY,
     val standByStyleMode: String = STANDBY_STYLE_OLED_DARK,
@@ -92,6 +98,8 @@ data class PenConfig(
     val pinnedDockPackages: List<String> = emptyList(),
     val enabledWidgetIds: List<String> = DEFAULT_WIDGET_ORDER,
     val desktopDeckMode: String = DECK_MODE_MIXED,
+    val desktopEngineMode: String = ENGINE_NATIVE_TURBO,
+    val zeroOverdrawMode: Boolean = true,
     val nativeWidgetIds: List<Int> = emptyList(),
     val nativeWidgetWidths: Map<Int, Int> = emptyMap(),
     // Jiuxuewang component-level scan & anti-lock settings
@@ -100,9 +108,9 @@ data class PenConfig(
     val blockedStockLauncherPackage: String = "",
     val blockedHomeActivities: Set<String> = emptySet(),
     // Independent Wallpapers + 4-mode Dynamic Wallpapers (static | procedural | gif | mp4 | live)
-    val darkWallpaperPresetId: String = WALLPAPER_AURORA,
+    val darkWallpaperPresetId: String = WALLPAPER_OBSIDIAN,
     val darkCustomWallpaperPath: String = "",
-    val lightWallpaperPresetId: String = WALLPAPER_GALLERY_LIGHT,
+    val lightWallpaperPresetId: String = WALLPAPER_PURE_MIST,
     val lightCustomWallpaperPath: String = "",
     val dynamicWallpaperMode: String = DYN_WALLPAPER_STATIC,
     val proceduralWallpaperStyle: String = PROC_AURORA_FLOW,
@@ -113,7 +121,7 @@ data class PenConfig(
     val typographyProfile: GranularTypographyProfile = GranularTypographyProfile(),
     // Multi-Style Clock & 60fps Motion Tier & Setup Assistant
     val multiClock: MultiClockConfig = MultiClockConfig(),
-    val motionTierId: String = PenMotionTier.FAST.id,
+    val motionTierId: String = DEFAULT_MOTION_TIER_ID,
     val setupAssistantCompleted: Boolean = false,
     // LAN Web Admin Console
     val lanAdminPort: Int = 8765,
@@ -176,6 +184,13 @@ data class PenConfig(
         const val DECK_MODE_MIXED = "mixed"
         const val DECK_MODE_NATIVE_ONLY = "native_only"
 
+        // PenOS 5.5 MT6582 Dual-Engine Desktop Mode
+        const val ENGINE_NATIVE_TURBO = "native_turbo"
+        const val ENGINE_COMPOSE_FULL = "compose_full"
+
+        val DEFAULT_MOTION_TIER_ID: String =
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) PenMotionTier.NONE.id else PenMotionTier.FAST.id
+
         // Static wallpapers
         const val WALLPAPER_AURORA = "aurora"
         const val WALLPAPER_INK = "ink"
@@ -218,17 +233,24 @@ data class PenConfig(
         const val CLOCK_COLOR_GLACIER = "glacier"
         const val CLOCK_COLOR_IVORY = "ivory"
 
-        val DEFAULT_WIDGET_ORDER = listOf(
+        val ALL_WIDGET_IDS = listOf(
             "quick_scan",
             "multi_clock",
+            "vocab_card",
             "weather",
             "mail_inbox",
             "calendar",
             "todo",
             "jinrishici",
-            "vocab_card",
             "pinned_apps",
             "pen_status"
+        )
+
+        // PenOS 5.5 MT6582 Default: 3 high-frequency cards on first launch; all 10 toggleable on demand!
+        val DEFAULT_WIDGET_ORDER = listOf(
+            "quick_scan",
+            "multi_clock",
+            "vocab_card"
         )
 
         val DEFAULT_SAVED_CITIES = listOf(
@@ -327,6 +349,8 @@ class PenPreferencesRepository(private val context: Context) {
         val PINNED_DOCK_CSV = stringPreferencesKey("pinned_dock_csv")
         val ENABLED_WIDGETS_CSV = stringPreferencesKey("enabled_widgets_csv")
         val DESKTOP_DECK_MODE = stringPreferencesKey("desktop_deck_mode")
+        val DESKTOP_ENGINE_MODE = stringPreferencesKey("desktop_engine_mode")
+        val ZERO_OVERDRAW_MODE = booleanPreferencesKey("zero_overdraw_mode")
         val NATIVE_WIDGET_IDS = stringPreferencesKey("native_widget_ids")
         val NATIVE_WIDGET_WIDTHS = stringPreferencesKey("native_widget_widths")
 
@@ -425,15 +449,17 @@ class PenPreferencesRepository(private val context: Context) {
             pinnedDockPackages = if (pinnedRaw.isBlank()) emptyList() else pinnedRaw.split(",").filter { it.isNotBlank() },
             enabledWidgetIds = if (widgetsRaw == null) PenConfig.DEFAULT_WIDGET_ORDER else widgetsRaw.split(",").filter { it.isNotBlank() },
             desktopDeckMode = prefs[Keys.DESKTOP_DECK_MODE] ?: PenConfig.DECK_MODE_MIXED,
+            desktopEngineMode = prefs[Keys.DESKTOP_ENGINE_MODE] ?: PenConfig.ENGINE_NATIVE_TURBO,
+            zeroOverdrawMode = prefs[Keys.ZERO_OVERDRAW_MODE] ?: true,
             nativeWidgetIds = nativeIdsRaw.split(",").mapNotNull { it.trim().toIntOrNull() },
             nativeWidgetWidths = decodeIntMap(nativeWidthsRaw),
             scanAppPackage = prefs[Keys.SCAN_APP_PACKAGE].orEmpty(),
             scanActivityClass = prefs[Keys.SCAN_ACTIVITY_CLASS].orEmpty(),
             blockedStockLauncherPackage = prefs[Keys.BLOCKED_LAUNCHER_PACKAGE].orEmpty(),
             blockedHomeActivities = prefs[Keys.BLOCKED_HOME_ACTIVITIES] ?: emptySet(),
-            darkWallpaperPresetId = prefs[Keys.DARK_WALLPAPER_PRESET] ?: PenConfig.WALLPAPER_AURORA,
+            darkWallpaperPresetId = prefs[Keys.DARK_WALLPAPER_PRESET] ?: PenConfig.WALLPAPER_OBSIDIAN,
             darkCustomWallpaperPath = prefs[Keys.DARK_CUSTOM_WALLPAPER].orEmpty(),
-            lightWallpaperPresetId = prefs[Keys.LIGHT_WALLPAPER_PRESET] ?: PenConfig.WALLPAPER_GALLERY_LIGHT,
+            lightWallpaperPresetId = prefs[Keys.LIGHT_WALLPAPER_PRESET] ?: PenConfig.WALLPAPER_PURE_MIST,
             lightCustomWallpaperPath = prefs[Keys.LIGHT_CUSTOM_WALLPAPER].orEmpty(),
             dynamicWallpaperMode = prefs[Keys.DYNAMIC_WALLPAPER_MODE] ?: PenConfig.DYN_WALLPAPER_STATIC,
             proceduralWallpaperStyle = prefs[Keys.PROCEDURAL_WALLPAPER_STYLE] ?: PenConfig.PROC_AURORA_FLOW,
@@ -442,12 +468,12 @@ class PenPreferencesRepository(private val context: Context) {
             customPoetryFontPath = typoProfile.poetry.externalPath.ifBlank { legacyPoetryFont },
             typographyProfile = typoProfile,
             multiClock = MultiClockConfig(
-                style = prefs[Keys.MULTI_CLOCK_STYLE] ?: MultiClockConfig.STYLE_BLOOM_ANALOG,
-                shape = prefs[Keys.MULTI_CLOCK_SHAPE] ?: MultiClockConfig.SHAPE_SCALLOP,
+                style = prefs[Keys.MULTI_CLOCK_STYLE] ?: MultiClockConfig.STYLE_KDE_MINIMAL,
+                shape = prefs[Keys.MULTI_CLOCK_SHAPE] ?: MultiClockConfig.SHAPE_SQUIRCLE,
                 showSeconds = prefs[Keys.MULTI_CLOCK_SECONDS] ?: true,
                 accentHex = prefs[Keys.MULTI_CLOCK_ACCENT] ?: 0xFFFF6B4AL
             ),
-            motionTierId = prefs[Keys.MOTION_TIER_ID] ?: PenMotionTier.FAST.id,
+            motionTierId = prefs[Keys.MOTION_TIER_ID] ?: PenConfig.DEFAULT_MOTION_TIER_ID,
             setupAssistantCompleted = prefs[Keys.SETUP_COMPLETED] ?: false,
             lanAdminPort = prefs[Keys.LAN_ADMIN_PORT] ?: 8765,
             lanAdminPin = prefs[Keys.LAN_ADMIN_PIN].orEmpty(),
@@ -599,6 +625,15 @@ class PenPreferencesRepository(private val context: Context) {
 
     suspend fun setDesktopDeckMode(mode: String) {
         context.penDataStore.edit { it[Keys.DESKTOP_DECK_MODE] = mode }
+    }
+
+    suspend fun setDesktopEngineMode(mode: String) {
+        val safe = if (mode == PenConfig.ENGINE_COMPOSE_FULL) PenConfig.ENGINE_COMPOSE_FULL else PenConfig.ENGINE_NATIVE_TURBO
+        context.penDataStore.edit { it[Keys.DESKTOP_ENGINE_MODE] = safe }
+    }
+
+    suspend fun setZeroOverdrawMode(enabled: Boolean) {
+        context.penDataStore.edit { it[Keys.ZERO_OVERDRAW_MODE] = enabled }
     }
 
     suspend fun addNativeWidgetId(widgetId: Int, widthDp: Int = 196) {

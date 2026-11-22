@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -195,6 +196,9 @@ private fun AnalogClockFace(
     val minute = (parts.getOrNull(1)?.toIntOrNull() ?: 30) % 60
     val second = (clock.secondsStr.toIntOrNull() ?: 0) % 60
 
+    val cachedScallopPath = remember { Path() }
+    val cachedScallopDim = remember { FloatArray(2) }
+
     Box(modifier = Modifier.size(92.dp), contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val r = minOf(size.width, size.height) / 2f - 2f
@@ -203,19 +207,23 @@ private fun AnalogClockFace(
             // Reshapable outer silhouette (M3 Expressive Scallop / Squircle / Circle / Pill)
             when (shape) {
                 MultiClockConfig.SHAPE_SCALLOP -> {
-                    val path = Path()
-                    val petals = 12
-                    val steps = 120
-                    for (i in 0..steps) {
-                        val theta = (i.toFloat() / steps) * 2f * PI.toFloat()
-                        val modR = r * (0.93f + 0.07f * cos(petals * theta))
-                        val x = center.x + modR * cos(theta)
-                        val y = center.y + modR * sin(theta)
-                        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    if (cachedScallopDim[0] != size.width || cachedScallopDim[1] != size.height) {
+                        cachedScallopPath.reset()
+                        val petals = 12
+                        val steps = 96
+                        for (i in 0..steps) {
+                            val theta = (i.toFloat() / steps) * 2f * PI.toFloat()
+                            val modR = r * (0.93f + 0.07f * cos(petals * theta))
+                            val x = center.x + modR * cos(theta)
+                            val y = center.y + modR * sin(theta)
+                            if (i == 0) cachedScallopPath.moveTo(x, y) else cachedScallopPath.lineTo(x, y)
+                        }
+                        cachedScallopPath.close()
+                        cachedScallopDim[0] = size.width
+                        cachedScallopDim[1] = size.height
                     }
-                    path.close()
-                    drawPath(path, color = dialFill)
-                    drawPath(path, color = accent.copy(alpha = 0.35f), style = Stroke(width = 2.2f))
+                    drawPath(cachedScallopPath, color = dialFill)
+                    drawPath(cachedScallopPath, color = accent.copy(alpha = 0.35f), style = Stroke(width = 2.2f))
                 }
                 MultiClockConfig.SHAPE_SQUIRCLE, MultiClockConfig.SHAPE_PILL -> {
                     val cr = if (shape == MultiClockConfig.SHAPE_PILL) r * 0.65f else r * 0.42f

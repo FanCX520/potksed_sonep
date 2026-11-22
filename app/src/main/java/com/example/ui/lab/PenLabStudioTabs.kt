@@ -428,7 +428,9 @@ fun LabWallpaperClockTab(
     onSetSwipeSensitivityDp: (Float) -> Unit = {},
     onSetGestureHapticsEnabled: (Boolean) -> Unit = {},
     onSetMailAutoSyncEnabled: (Boolean) -> Unit = {},
-    onRestoreDegradedWallpaper: () -> Unit = {}
+    onRestoreDegradedWallpaper: () -> Unit = {},
+    onSetDesktopEngineMode: (String) -> Unit = {},
+    onSetZeroOverdrawMode: (Boolean) -> Unit = {}
 ) {
     val colors = PenTheme.colors
     val cfg = state.config
@@ -544,6 +546,47 @@ fun LabWallpaperClockTab(
                     ) {
                         Text(tier.label, fontSize = 9.sp, color = if (act) Color.White else MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
                     }
+                }
+            }
+
+            // PenOS 5.5 MT6582 Dual-Engine & Zero-Overdraw Controls
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("主屏引擎：", fontSize = 9.sp, color = colors.textMuted)
+                val isNative = cfg.desktopEngineMode == PenConfig.ENGINE_NATIVE_TURBO
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (isNative) colors.vocabEmerald else colors.chipSurface,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { onSetDesktopEngineMode(PenConfig.ENGINE_NATIVE_TURBO) }
+                        .testTag("lab_engine_native_chip")
+                ) {
+                    Text("原生极速(MT6582)", fontSize = 9.sp, color = if (isNative) Color.White else MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
+                }
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (!isNative) colors.primaryAction else colors.chipSurface,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { onSetDesktopEngineMode(PenConfig.ENGINE_COMPOSE_FULL) }
+                        .testTag("lab_engine_compose_chip")
+                ) {
+                    Text("完整Compose", fontSize = 9.sp, color = if (!isNative) Color.White else MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
+                }
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (cfg.zeroOverdrawMode) colors.primaryAction else colors.chipSurface,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { onSetZeroOverdrawMode(!cfg.zeroOverdrawMode) }
+                        .testTag("lab_zero_overdraw_toggle")
+                ) {
+                    Text(
+                        text = if (cfg.zeroOverdrawMode) "零过绘制✓" else "轻透明视觉",
+                        fontSize = 9.sp,
+                        color = if (cfg.zeroOverdrawMode) Color.White else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
                 }
             }
 

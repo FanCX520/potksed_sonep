@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.view.View
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.VocabCatalogExpanded
 import com.example.data.prefs.AiApiProfile
+import com.example.data.prefs.MultiClockConfig
 import com.example.data.prefs.PenConfig
 import com.example.data.prefs.PenPrefsCodec
 import com.example.data.remote.ImapSmtpMailClient
@@ -18,6 +20,8 @@ import com.example.data.remote.WmoWeatherMapper
 import com.example.system.AntiLockCoordinator
 import com.example.system.QrCodeMatrix
 import com.example.system.SafeMediaImporter
+import com.example.ui.desktop.SwipeDirectionClassifier
+import com.example.ui.desktop.SwipeDirectionDecision
 import com.example.ui.theme.FontSlotSpec
 import com.example.ui.theme.GranularTypographyProfile
 import com.example.widgets.CustomWidgetDslParser
@@ -54,7 +58,28 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("setup_skip_button").performClick()
         composeRule.waitForIdle()
 
-        // 1. Desktop renders CarPlay dock, widget deck, quick scan & multi-style clock
+        // 1a. PenOS 5.5 defaults to MT6582 Native Turbo Desktop Engine with 3 core cards
+        composeRule.onNodeWithTag("native_turbo_desktop").assertIsDisplayed()
+        composeRule.runOnUiThread {
+            val root = composeRule.activity.window.decorView
+            assertNotNull("Expected native left dock", root.findViewWithTag<View>("native_left_dock"))
+            assertNotNull("Expected native quick_scan card", root.findViewWithTag<View>("native_card_quick_scan"))
+            assertNotNull("Expected native multi_clock card", root.findViewWithTag<View>("native_card_multi_clock"))
+            assertNotNull("Expected native vocab_card card", root.findViewWithTag<View>("native_card_vocab_card"))
+            val ctrlBtn = root.findViewWithTag<View>("native_dock_control_btn")
+            assertNotNull("Expected native control center button", ctrlBtn)
+            ctrlBtn.performClick()
+        }
+        composeRule.waitForIdle()
+
+        // 1b. Control Center opens over Native Turbo -> 1-tap hot-switch to Full Compose Desktop
+        composeRule.onNodeWithTag("overlay_control_center").assertIsDisplayed()
+        composeRule.onNodeWithTag("control_engine_toggle_chip").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("control_close_button").performClick()
+        composeRule.waitForIdle()
+
+        // 1c. Full Compose Desktop renders CarPlay dock, widget deck, quick scan & multi-style clock
         composeRule.onNodeWithTag("carplay_left_dock").assertIsDisplayed()
         composeRule.onNodeWithTag("desktop_widget_deck").assertIsDisplayed()
         composeRule.onNodeWithTag("widget_quick_scan").assertIsDisplayed()
@@ -414,5 +439,73 @@ class ExampleRobolectricTest {
         val emptyRes = SafeMediaImporter.validateAndProbeFontFile(emptyFont)
         assertTrue("Empty font file must be rejected", emptyRes.isFailure)
         emptyFont.delete()
+    }
+
+    @Test
+    fun penOs55Mt6582DefaultsAndThreeCardDeck() {
+        val cfg = PenConfig()
+        assertEquals(PenConfig.ENGINE_NATIVE_TURBO, cfg.desktopEngineMode)
+        assertTrue("Zero-overdraw mode must be enabled by default for Mali-400", cfg.zeroOverdrawMode)
+        assertEquals(listOf("quick_scan", "multi_clock", "vocab_card"), cfg.enabledWidgetIds)
+        assertEquals(10, PenConfig.ALL_WIDGET_IDS.size)
+        assertEquals(MultiClockConfig.STYLE_KDE_MINIMAL, cfg.multiClock.style)
+        assertEquals(PenConfig.WALLPAPER_OBSIDIAN, cfg.darkWallpaperPresetId)
+        assertEquals(PenConfig.WALLPAPER_PURE_MIST, cfg.lightWallpaperPresetId)
+    }
+
+    @Test
+    fun penOs55SwipeDirectionClassifierProtectsHorizontalScroll() {
+        val touchSlop = 16f
+
+        // Below touchSlop -> NONE
+        assertEquals(
+            SwipeDirectionDecision.NONE,
+            SwipeDirectionClassifier.classify(dx = 8f, dy = 10f, touchSlop = touchSlop)
+        )
+        // Pure horizontal drag -> HORIZONTAL_SCROLL
+        assertEquals(
+            SwipeDirectionDecision.HORIZONTAL_SCROLL,
+            SwipeDirectionClassifier.classify(dx = -60f, dy = 12f, touchSlop = touchSlop)
+        )
+        // Shallow diagonal drag (|dy| <= |dx| * 1.35) -> never steals horizontal scroll
+        assertEquals(
+            SwipeDirectionDecision.NONE,
+            SwipeDirectionClassifier.classify(dx = 40f, dy = -45f, touchSlop = touchSlop)
+        )
+        // Steep upward swipe -> VERTICAL_SWIPE_UP (opens Apple TV Drawer)
+        assertEquals(
+            SwipeDirectionDecision.VERTICAL_SWIPE_UP,
+            SwipeDirectionClassifier.classify(dx = 10f, dy = -85f, touchSlop = touchSlop)
+        )
+        // Steep downward swipe -> VERTICAL_SWIPE_DOWN (opens Control Center)
+        assertEquals(
+            SwipeDirectionDecision.VERTICAL_SWIPE_DOWN,
+            SwipeDirectionClassifier.classify(dx = -8f, dy = 88f, touchSlop = touchSlop)
+        )
+    }
+
+    @Test
+    fun penOs55SnapshotPreservesDualEngineAndZeroOverdraw() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<PenOsApplication>()
+        val prefs = app.preferences
+        val mgr = app.snapshotManager
+
+        prefs.setDesktopEngineMode(PenConfig.ENGINE_COMPOSE_FULL)
+        prefs.setZeroOverdrawMode(false)
+        mgr.captureSnapshot("5.5引擎状态测试", "USER")
+
+        prefs.setDesktopEngineMode(PenConfig.ENGINE_NATIVE_TURBO)
+        prefs.setZeroOverdrawMode(true)
+        assertEquals(PenConfig.ENGINE_NATIVE_TURBO, prefs.currentConfig().desktopEngineMode)
+        assertTrue(prefs.currentConfig().zeroOverdrawMode)
+
+        val restored = mgr.restoreLatestSnapshot()
+        assertTrue(restored.isSuccess)
+        assertEquals(PenConfig.ENGINE_COMPOSE_FULL, prefs.currentConfig().desktopEngineMode)
+        assertFalse(prefs.currentConfig().zeroOverdrawMode)
+
+        // Reset back to MT6582 defaults
+        prefs.setDesktopEngineMode(PenConfig.ENGINE_NATIVE_TURBO)
+        prefs.setZeroOverdrawMode(true)
     }
 }

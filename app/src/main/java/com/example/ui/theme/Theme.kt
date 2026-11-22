@@ -42,6 +42,22 @@ data class PenOsExtendedColors(
 
 private val DarkExtendedColors = PenOsExtendedColors()
 
+private val ZeroOverdrawDarkColors = PenOsExtendedColors(
+    isAppleLight = false,
+    pureBlack = Color(0xFF06080D),
+    obsidian = Color(0xFF06080D),
+    canvasBackground = Color(0xFF06080D),
+    glassCard = Color(0xFF12161F),
+    glassCardElevated = Color(0xFF161B26),
+    secondaryTintCard = Color(0xFF1A2231),
+    chipSurface = Color(0xFF1E2636),
+    glassBorder = Color(0xFF232B3A),
+    glassBorderBright = Color(0xFF334155),
+    showCardBorder = true,
+    cardCornerRadius = 16.dp,
+    overlayScrim = Color(0xE605070B)
+)
+
 private val AppleLightExtendedColors = PenOsExtendedColors(
     isAppleLight = true,
     pureBlack = AppleTrueBlack,
@@ -68,11 +84,25 @@ private val AppleLightExtendedColors = PenOsExtendedColors(
     overlayScrim = Color(0xC8F3F6F6)
 )
 
-val LocalPenOsColors = staticCompositionLocalOf { DarkExtendedColors }
+private val ZeroOverdrawLightColors = AppleLightExtendedColors.copy(
+    obsidian = Color(0xFFF2F4F7),
+    canvasBackground = Color(0xFFF2F4F7),
+    glassCard = Color(0xFFFFFFFF),
+    glassCardElevated = Color(0xFFFFFFFF),
+    chipSurface = Color(0xFFE9EEF4),
+    glassBorder = Color(0xFFE2E8F0),
+    glassBorderBright = Color(0xFFCBD5E1),
+    showCardBorder = true,
+    cardCornerRadius = 16.dp,
+    overlayScrim = Color(0xE6F2F4F7)
+)
+
+val LocalPenOsColors = staticCompositionLocalOf { ZeroOverdrawDarkColors }
 val LocalPoetryFontFamily = staticCompositionLocalOf<FontFamily> { NotoSerifScFontFamily }
 val LocalClockFontFamily = staticCompositionLocalOf<FontFamily> { UnifiedClockFontFamily }
 val LocalTypographyProfile = staticCompositionLocalOf { GranularTypographyProfile() }
 val LocalPenMotionTier = staticCompositionLocalOf { PenMotionTier.FAST }
+val LocalZeroOverdraw = staticCompositionLocalOf { true }
 
 private val PenOsDarkColorScheme = darkColorScheme(
     primary = StandByCoral,
@@ -124,9 +154,15 @@ fun PenOsTheme(
     externalPoetryFontPath: String = "",
     typographyProfile: GranularTypographyProfile = GranularTypographyProfile(),
     motionTier: PenMotionTier = PenMotionTier.FAST,
+    zeroOverdraw: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val extendedColors = if (isAppleLight) AppleLightExtendedColors else DarkExtendedColors
+    val extendedColors = when {
+        zeroOverdraw && isAppleLight -> ZeroOverdrawLightColors
+        zeroOverdraw && !isAppleLight -> ZeroOverdrawDarkColors
+        isAppleLight -> AppleLightExtendedColors
+        else -> DarkExtendedColors
+    }
     val colorScheme = if (isAppleLight) AppleLightColorScheme else PenOsDarkColorScheme
     val effectiveProfile = remember(typographyProfile, externalPoetryFontPath) {
         if (externalPoetryFontPath.isNotBlank() && typographyProfile.poetry.externalPath.isBlank()) {
@@ -155,7 +191,8 @@ fun PenOsTheme(
         LocalPoetryFontFamily provides poetryFont,
         LocalClockFontFamily provides clockFont,
         LocalTypographyProfile provides effectiveProfile,
-        LocalPenMotionTier provides motionTier
+        LocalPenMotionTier provides motionTier,
+        LocalZeroOverdraw provides zeroOverdraw
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
@@ -180,4 +217,7 @@ object PenTheme {
 
     val motionTier: PenMotionTier
         @Composable get() = LocalPenMotionTier.current
+
+    val zeroOverdraw: Boolean
+        @Composable get() = LocalZeroOverdraw.current
 }

@@ -73,6 +73,7 @@ import com.example.ui.mail.MailScreen
 import com.example.ui.setup.SetupAssistantScreen
 import com.example.ui.standby.StandByScreen
 import com.example.ui.theme.PenMotion
+import com.example.ui.theme.PenMotionTier
 import com.example.ui.theme.PenOsTheme
 import com.example.ui.theme.PenTheme
 import com.example.ui.vault.HiddenVaultScreen
@@ -116,6 +117,7 @@ class MainActivity : ComponentActivity() {
                     isAppleLight = state.config.isAppleLightDesktop(),
                     typographyProfile = state.config.typographyProfile,
                     motionTier = motionTier,
+                    zeroOverdraw = state.config.zeroOverdrawMode,
                     externalPoetryFontPath = state.config.customPoetryFontPath
                 ) {
                     LaunchedEffect(state.mode, state.config.standByBrightness, state.deviceControl.brightnessFraction) {
@@ -404,19 +406,7 @@ class MainActivity : ComponentActivity() {
                         onTogglePreviewFrame = { viewModel.setPenFramePreviewEnabled(it) }
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            AnimatedContent(
-                                targetState = state.mode,
-                                transitionSpec = {
-                                    when {
-                                        targetState == PenScreenMode.POMODORO || targetState == PenScreenMode.APPLE_TV_DRAWER ->
-                                            PenMotion.verticalScreenTransition(slideUpEnter = true, tier = motionTier)
-                                        initialState == PenScreenMode.POMODORO || initialState == PenScreenMode.APPLE_TV_DRAWER ->
-                                            PenMotion.verticalScreenTransition(slideUpEnter = false, tier = motionTier)
-                                        else -> PenMotion.overlayEnter(tier = motionTier) togetherWith PenMotion.overlayExit(tier = motionTier)
-                                    }
-                                },
-                                label = "penos_mode_transition"
-                            ) { targetMode ->
+                            val renderScreen: @Composable (PenScreenMode) -> Unit = { targetMode ->
                                 when (targetMode) {
                                     PenScreenMode.SETUP -> SetupAssistantScreen(
                                         state = state,
@@ -440,7 +430,8 @@ class MainActivity : ComponentActivity() {
                                             viewModel.switchMode(PenScreenMode.MAIL)
                                             viewModel.setShowMailAccountDialog(true)
                                         },
-                                        onComplete = viewModel::completeSetupAssistant
+                                        onComplete = viewModel::completeSetupAssistant,
+                                        onSelectDesktopEngineMode = viewModel::setDesktopEngineMode
                                     )
 
                                     PenScreenMode.DESKTOP -> DesktopScreen(
@@ -491,7 +482,8 @@ class MainActivity : ComponentActivity() {
                                         onRunWidgetMacro = viewModel::runWidgetMacro,
                                         onRefreshHttpBlock = viewModel::refreshCustomHttpBlock,
                                         onRollbackLatestSnapshot = viewModel::rollbackLatestSnapshot,
-                                        onRestoreDegradedWallpaper = viewModel::restoreDegradedWallpaper
+                                        onRestoreDegradedWallpaper = viewModel::restoreDegradedWallpaper,
+                                        onToggleDesktopEngine = viewModel::toggleDesktopEngineMode
                                     )
 
                                     PenScreenMode.APPLE_TV_DRAWER -> AppleTvDrawerScreen(
@@ -635,7 +627,9 @@ class MainActivity : ComponentActivity() {
                                         onSetSwipeSensitivityDp = viewModel::setSwipeSensitivityDp,
                                         onSetGestureHapticsEnabled = viewModel::setGestureHapticsEnabled,
                                         onSetMailAutoSyncEnabled = viewModel::setMailAutoSyncEnabled,
-                                        onRestoreDegradedWallpaper = viewModel::restoreDegradedWallpaper
+                                        onRestoreDegradedWallpaper = viewModel::restoreDegradedWallpaper,
+                                        onSetDesktopEngineMode = viewModel::setDesktopEngineMode,
+                                        onSetZeroOverdrawMode = viewModel::setZeroOverdrawMode
                                     )
 
                                     PenScreenMode.VAULT -> HiddenVaultScreen(
@@ -698,6 +692,26 @@ class MainActivity : ComponentActivity() {
                                         },
                                         onToggleStockHomeBypass60s = viewModel::toggleStockHomeBypass60s
                                     )
+                                }
+                            }
+
+                            if (motionTier == PenMotionTier.NONE) {
+                                renderScreen(state.mode)
+                            } else {
+                                AnimatedContent(
+                                    targetState = state.mode,
+                                    transitionSpec = {
+                                        when {
+                                            targetState == PenScreenMode.POMODORO || targetState == PenScreenMode.APPLE_TV_DRAWER ->
+                                                PenMotion.verticalScreenTransition(slideUpEnter = true, tier = motionTier)
+                                            initialState == PenScreenMode.POMODORO || initialState == PenScreenMode.APPLE_TV_DRAWER ->
+                                                PenMotion.verticalScreenTransition(slideUpEnter = false, tier = motionTier)
+                                            else -> PenMotion.overlayEnter(tier = motionTier) togetherWith PenMotion.overlayExit(tier = motionTier)
+                                        }
+                                    },
+                                    label = "penos_mode_transition"
+                                ) { targetMode ->
+                                    renderScreen(targetMode)
                                 }
                             }
 
@@ -835,7 +849,7 @@ private fun PenDisplayAdaptiveShell(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "PenOS 4.0 · 640×172 横屏视窗（上滑TV抽屉→再上滑番茄 / 下滑控制中心 / 时间5连+长按密室）",
+                        text = "PenOS 5.5 · MT6582 640×172 横屏视窗（原生极速/Compose双引擎 · 上滑TV抽屉→再上滑番茄 / 下滑控制中心）",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isLight) Color(0xFF6E6E73) else PenTheme.colors.textMuted
                     )
