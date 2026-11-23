@@ -4,7 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,16 +32,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -78,21 +78,40 @@ fun PomodoroFocusScreen(
     val pomo = state.pomodoro
     val wn = state.lab.whiteNoise
     val clockFont = PenTheme.clockFont
-    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
-    var dragAccum by remember { mutableFloatStateOf(0f) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragStart = { dragAccum = 0f },
-                    onVerticalDrag = { _, dragAmount -> dragAccum += dragAmount },
-                    onDragEnd = {
-                        if (dragAccum > 36f) onExit()
-                        dragAccum = 0f
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    val slop = viewConfiguration.touchSlop.coerceAtLeast(10f)
+                    var lockedVertical = false
+                    var lockedHorizontal = false
+                    var fired = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        if (!lockedVertical && !lockedHorizontal) {
+                            when (SwipeDirectionClassifier.classify(change.position.x - startX, change.position.y - startY, slop)) {
+                                SwipeDirectionDecision.HORIZONTAL_SCROLL -> lockedHorizontal = true
+                                SwipeDirectionDecision.VERTICAL_SWIPE_UP,
+                                SwipeDirectionDecision.VERTICAL_SWIPE_DOWN -> lockedVertical = true
+                                SwipeDirectionDecision.NONE -> Unit
+                            }
+                        }
+                        if (lockedVertical && !fired) {
+                            if (change.position.y - startY > 36f) {
+                                fired = true
+                                change.consume()
+                                onExit()
+                            }
+                        }
                     }
-                )
+                }
             }
             .testTag("pomodoro_focus_screen")
     ) {
@@ -158,28 +177,12 @@ fun PomodoroFocusScreen(
             }
         }
 
-        // 3. Giant Centered Unified Clock (decoupled 1s clock tick)
-        Column(
-            modifier = Modifier.align(Alignment.Center),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = liveClock.timeHHmm,
-                style = MaterialTheme.typography.displayLarge.copy(
-                    fontFamily = clockFont,
-                    fontSize = 64.sp,
-                    lineHeight = 64.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-2).sp
-                ),
-                color = if (isLight) Color(0xFF1D1D1F) else Color(0xFFF9FAFB)
-            )
-            Text(
-                text = "${liveClock.dateLabel} · 电量 ${liveClock.batteryPercent}%",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (isLight) Color(0xFF424245) else Color(0xFFD1D5DB)
-            )
-        }
+        // 3. Giant Centered Unified Clock (isolated 1s leaf — zero full-screen recomposition!)
+        PomodoroLiveClockCenter(
+            clockFont = clockFont,
+            isLight = isLight,
+            modifier = Modifier.align(Alignment.Center)
+        )
 
         // 4. Bottom-Left Compact Pomodoro Countdown Pill
         Surface(
@@ -313,3 +316,34 @@ fun PomodoroFocusScreen(
         }
     }
 }
+
+@Composable
+private fun PomodoroLiveClockCenter(
+    clockFont: FontFamily,
+    isLight: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = liveClock.timeHHmm,
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontFamily = clockFont,
+                fontSize = 64.sp,
+                lineHeight = 64.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-2).sp
+            ),
+            color = if (isLight) Color(0xFF1D1D1F) else Color(0xFFF9FAFB)
+        )
+        Text(
+            text = "${liveClock.dateLabel} · 电量 ${liveClock.batteryPercent}%",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (isLight) Color(0xFF424245) else Color(0xFFD1D5DB)
+        )
+    }
+}
+

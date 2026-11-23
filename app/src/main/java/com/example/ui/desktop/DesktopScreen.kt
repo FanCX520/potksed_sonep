@@ -444,14 +444,9 @@ fun SharedThemeWallpaperBackdrop(
     customPath: String,
     forFullScreenClock: Boolean = false
 ) {
-    val customBitmap = remember(customPath) {
-        if (customPath.isNotBlank()) {
-            val file = File(customPath)
-            if (file.exists()) {
-                runCatching { BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap() }.getOrNull()
-            } else null
-        } else null
-    }
+    val customBitmap = if (presetId == PenConfig.WALLPAPER_CUSTOM && customPath.isNotBlank()) {
+        com.example.system.rememberSampledBitmap(customPath, maxWidthPx = 720, maxHeightPx = 320)
+    } else null
 
     if (isAppleLight) {
         Box(modifier = Modifier.fillMaxSize().background(PenTheme.colors.canvasBackground)) {

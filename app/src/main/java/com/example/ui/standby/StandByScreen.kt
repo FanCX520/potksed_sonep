@@ -7,8 +7,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,8 +49,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,6 +62,8 @@ import com.example.data.prefs.PenConfig
 import com.example.data.remote.WmoWeatherMapper
 import com.example.ui.PenOsUiState
 import com.example.ui.desktop.SharedThemeWallpaperBackdrop
+import com.example.ui.desktop.SwipeDirectionClassifier
+import com.example.ui.desktop.SwipeDirectionDecision
 import com.example.ui.theme.AppleBlue
 import com.example.ui.theme.AppleEmber
 import com.example.ui.theme.AppleFogMist
@@ -108,13 +113,12 @@ fun StandByScreen(
     val accent = if (isLightStandBy) AppleBlue else clockColor
     val badgeInk = if (isLightStandBy) AppleEmber else clockColor.copy(alpha = 0.85f)
 
-    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
     val motionTier = LocalPenMotionTier.current
-    val minuteHash = liveClock.timeHHmm.lastOrNull()?.digitToIntOrNull() ?: 0
+    // Subtle burn-in shift computed from slow state.clock (updates once per minute, NOT every second!)
+    val minuteHash = state.clock.timeHHmm.lastOrNull()?.digitToIntOrNull() ?: 0
     val shiftX = ((minuteHash % 3) - 1).dp
     val shiftY = (((minuteHash / 3) % 3) - 1).dp
 
-    var verticalDrag by remember { mutableFloatStateOf(0f) }
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var lastSlideDir by remember { mutableIntStateOf(1) }
 
@@ -125,15 +129,40 @@ fun StandByScreen(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragStart = { verticalDrag = 0f },
-                    onVerticalDrag = { _, dragAmount -> verticalDrag += dragAmount },
-                    onDragEnd = {
-                        if (verticalDrag < -34f) onSwipeUpToPomodoro()
-                        else if (verticalDrag > 42f) onWakeToDesktop()
-                        verticalDrag = 0f
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    val slop = viewConfiguration.touchSlop.coerceAtLeast(10f)
+                    var lockedVertical = false
+                    var lockedHorizontal = false
+                    var fired = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        if (!lockedVertical && !lockedHorizontal) {
+                            when (SwipeDirectionClassifier.classify(change.position.x - startX, change.position.y - startY, slop)) {
+                                SwipeDirectionDecision.HORIZONTAL_SCROLL -> lockedHorizontal = true
+                                SwipeDirectionDecision.VERTICAL_SWIPE_UP,
+                                SwipeDirectionDecision.VERTICAL_SWIPE_DOWN -> lockedVertical = true
+                                SwipeDirectionDecision.NONE -> Unit
+                            }
+                        }
+                        if (lockedVertical && !fired) {
+                            val dy = change.position.y - startY
+                            if (dy < -34f) {
+                                fired = true
+                                change.consume()
+                                onSwipeUpToPomodoro()
+                            } else if (dy > 42f) {
+                                fired = true
+                                change.consume()
+                                onWakeToDesktop()
+                            }
+                        }
                     }
-                )
+                }
             }
             .clickable(onClick = onWakeToDesktop)
             .testTag("standby_root")
@@ -209,26 +238,11 @@ fun StandByScreen(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = liveClock.timeHHmm,
-                        style = MaterialTheme.typography.displayLarge.copy(
-                            fontFamily = clockFont,
-                            fontSize = 66.sp,
-                            lineHeight = 66.sp,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = clockColor,
-                        maxLines = 1
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = liveClock.secondsStr,
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = clockFont),
-                        color = secondaryInk.copy(alpha = 0.70f),
-                        modifier = Modifier.padding(bottom = 10.dp)
-                    )
-                }
+                StandByLiveClockDigits(
+                    clockFont = clockFont,
+                    clockColor = clockColor,
+                    secondaryInk = secondaryInk
+                )
 
                 Text(
                     text = "上滑进番茄专注 · 右卡左右滑切组件",
@@ -570,3 +584,33 @@ private fun StandByPomodoroPane(
         Text("上滑进入全屏壁纸番茄专注模式", style = MaterialTheme.typography.labelSmall, color = secondaryInk)
     }
 }
+
+@Composable
+private fun StandByLiveClockDigits(
+    clockFont: FontFamily,
+    clockColor: Color,
+    secondaryInk: Color
+) {
+    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text(
+            text = liveClock.timeHHmm,
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontFamily = clockFont,
+                fontSize = 66.sp,
+                lineHeight = 66.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            color = clockColor,
+            maxLines = 1
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = liveClock.secondsStr,
+            style = MaterialTheme.typography.titleMedium.copy(fontFamily = clockFont),
+            color = secondaryInk.copy(alpha = 0.70f),
+            modifier = Modifier.padding(bottom = 10.dp)
+        )
+    }
+}
+

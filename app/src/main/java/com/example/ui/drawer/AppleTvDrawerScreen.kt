@@ -4,7 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -57,6 +59,8 @@ import com.example.data.local.CustomWidgetEntity
 import com.example.data.local.DrawerSlotEntity
 import com.example.system.PenDynamicWallpaperBackdrop
 import com.example.ui.PenOsUiState
+import com.example.ui.desktop.SwipeDirectionClassifier
+import com.example.ui.desktop.SwipeDirectionDecision
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
 import com.example.widgets.CustomDslWidgetCard
@@ -96,30 +100,51 @@ fun AppleTvDrawerScreen(
     val colors = MaterialTheme.colorScheme
     val swipeThresholdPx = with(LocalDensity.current) { state.config.swipeSensitivityDp.dp.toPx() }
     var editMode by remember { mutableStateOf(false) }
-    var dragAccum by remember { mutableFloatStateOf(0f) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .testTag("apple_tv_drawer_screen")
             .pointerInput(swipeThresholdPx) {
-                detectVerticalDragGestures(
-                    onDragStart = { dragAccum = 0f },
-                    onVerticalDrag = { _, dragAmount -> dragAccum += dragAmount },
-                    onDragEnd = {
-                        when {
-                            dragAccum < -swipeThresholdPx -> {
-                                onGestureHaptic()
-                                onEnterPomodoro()
-                            }
-                            dragAccum > swipeThresholdPx -> {
-                                onGestureHaptic()
-                                onClose()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startX = down.position.x
+                    val startY = down.position.y
+                    val slop = viewConfiguration.touchSlop.coerceAtLeast(10f)
+                    var lockedVertical = false
+                    var lockedHorizontal = false
+                    var fired = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        if (!lockedVertical && !lockedHorizontal) {
+                            when (SwipeDirectionClassifier.classify(change.position.x - startX, change.position.y - startY, slop)) {
+                                SwipeDirectionDecision.HORIZONTAL_SCROLL -> lockedHorizontal = true
+                                SwipeDirectionDecision.VERTICAL_SWIPE_UP,
+                                SwipeDirectionDecision.VERTICAL_SWIPE_DOWN -> lockedVertical = true
+                                SwipeDirectionDecision.NONE -> Unit
                             }
                         }
-                        dragAccum = 0f
+                        if (lockedVertical && !fired) {
+                            val dy = change.position.y - startY
+                            when {
+                                dy <= -swipeThresholdPx -> {
+                                    fired = true
+                                    change.consume()
+                                    onGestureHaptic()
+                                    onEnterPomodoro()
+                                }
+                                dy >= swipeThresholdPx -> {
+                                    fired = true
+                                    change.consume()
+                                    onGestureHaptic()
+                                    onClose()
+                                }
+                            }
+                        }
                     }
-                )
+                }
             }
     ) {
         PenDynamicWallpaperBackdrop(

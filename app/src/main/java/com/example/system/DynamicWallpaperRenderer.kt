@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -35,7 +36,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.R
 import com.example.data.prefs.PenConfig
 import com.example.ui.theme.PenTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import kotlin.math.PI
@@ -82,9 +85,47 @@ object BitmapDecodeCache {
         return decoded
     }
 
+    fun peekMemoryCache(path: String, maxWidthPx: Int = 720, maxHeightPx: Int = 360): ImageBitmap? {
+        if (path.isBlank()) return null
+        val prefix = "$path@"
+        val suffix = "_${maxWidthPx}x$maxHeightPx"
+        return synchronized(cache) {
+            cache.entries.firstOrNull { it.key.startsWith(prefix) && it.key.endsWith(suffix) }?.value
+        }
+    }
+
     fun clear() {
         synchronized(cache) { cache.clear() }
     }
+}
+
+/**
+ * Asynchronous downsampled bitmap loader that NEVER touches disk or BitmapFactory on Main Thread.
+ */
+@Composable
+fun rememberSampledBitmap(
+    path: String,
+    maxWidthPx: Int = 720,
+    maxHeightPx: Int = 360
+): ImageBitmap? {
+    val cached = remember(path, maxWidthPx, maxHeightPx) {
+        BitmapDecodeCache.peekMemoryCache(path, maxWidthPx, maxHeightPx)
+    }
+    val state = produceState<ImageBitmap?>(initialValue = cached, path, maxWidthPx, maxHeightPx) {
+        if (path.isBlank()) {
+            value = null
+            return@produceState
+        }
+        val mem = BitmapDecodeCache.peekMemoryCache(path, maxWidthPx, maxHeightPx)
+        if (mem != null) {
+            value = mem
+            return@produceState
+        }
+        value = withContext(Dispatchers.IO) {
+            BitmapDecodeCache.decodeSampled(path, maxWidthPx, maxHeightPx)
+        }
+    }
+    return state.value
 }
 
 /**
@@ -191,9 +232,9 @@ fun StaticThemeWallpaperBackdrop(
         return
     }
 
-    val customBitmap = remember(customPath) {
-        BitmapDecodeCache.decodeSampled(customPath, maxWidthPx = 720, maxHeightPx = 320)
-    }
+    val customBitmap = if (presetId == PenConfig.WALLPAPER_CUSTOM && customPath.isNotBlank()) {
+        rememberSampledBitmap(customPath, maxWidthPx = 720, maxHeightPx = 320)
+    } else null
 
     if (isAppleLight) {
         Box(

@@ -56,10 +56,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -91,16 +94,22 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     private val _screenMode = MutableStateFlow(PenScreenMode.DESKTOP)
     private val _activeOverlay = MutableStateFlow(DesktopOverlay.NONE)
 
-    // 60fps Architecture: 1-second ticks stay in clockTickFlow so only clock leaves recompose!
-    private val initialTelemetry = readTelemetry(previous = ClockTelemetryState(), includeHeavyStats = true)
-    private val _clockTick = MutableStateFlow(initialTelemetry)
+    // Single shared config StateFlow (parsed once on Dispatchers.IO with distinctUntilChanged)
+    private val configState: StateFlow<PenConfig> = prefs.configFlow.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = PenConfig()
+    )
+
+    // 60fps Architecture: zero main-thread Binder IPC during ViewModel construction!
+    private val _clockTick = MutableStateFlow(ClockTelemetryState())
     val clockTickFlow: StateFlow<ClockTelemetryState> = _clockTick.asStateFlow()
 
-    // Slow telemetry in uiState updates only on minute/date/battery/RAM change (NOT every second)
-    private val _slowTelemetry = MutableStateFlow(initialTelemetry)
+    // Slow telemetry in uiState updates ONLY when minute/date/battery/wifi changes (NOT raw RAM jitter)
+    private val _slowTelemetry = MutableStateFlow(ClockTelemetryState())
 
     private val _pomodoro = MutableStateFlow(PomodoroState())
-    private val _deviceControl = MutableStateFlow(readDeviceControl())
+    private val _deviceControl = MutableStateFlow(DeviceControlState())
     private val _isPoemLoading = MutableStateFlow(false)
     private val _isWeatherLoading = MutableStateFlow(false)
     private val _weatherSourceStatus = MutableStateFlow("本地缓存")
@@ -127,7 +136,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     // PenOS 5.0 Guardrails, RAM Governance, 60s Bypass & Gesture Haptics
     private val _pendingMcpChanges = MutableStateFlow<List<PendingMcpChange>>(emptyList())
-    private val _memoryHealth = MutableStateFlow(MemoryHealthState(availRamMb = initialTelemetry.availRamMb))
+    private val _memoryHealth = MutableStateFlow(MemoryHealthState())
     private val _stockHomeBypassSec = MutableStateFlow(0)
     private val _gestureHapticNonce = MutableStateFlow(0)
 
@@ -135,6 +144,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     private var lastUserInteractionElapsedMs: Long = SystemClock.elapsedRealtime()
     private var lastSecretTapElapsedMs: Long = 0L
     private var hasCheckedInitialSetup: Boolean = false
+    private var lastKeepAliveEnabled: Boolean? = null
     private var isSilentMailSyncRunning: Boolean = false
 
     private val harnessExecutor = PenHarnessExecutor(
@@ -207,15 +217,37 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         val pen50: Pen50Bundle
     )
 
+    private data class MailMetaBundle(
+        val selectedId: String?,
+        val isLoading: Boolean,
+        val isAiBusy: Boolean,
+        val summary: String,
+        val draft: MailDraftState?
+    )
+
+    private data class AppSubBundle(
+        val apps: List<InstalledAppInfo>,
+        val vocab: VocabSessionState,
+        val secret: SecretTriggerState,
+        val diag: SystemDiagnostics
+    )
+
+    private data class MetaSubBundle(
+        val isVaultUnlocked: Boolean,
+        val isSyncing: Boolean,
+        val banner: String?,
+        val syncCode: String?
+    )
+
     private val coreFlow = combine(
         _screenMode,
         _activeOverlay,
-        prefs.configFlow,
+        configState,
         _slowTelemetry,
         poetryRepo.latestPoemFlow
     ) { mode, overlay, config, clock, poem ->
         CoreBundle(mode, overlay, config, clock, poem ?: OfflineSeedData.defaultPoems.first())
-    }
+    }.distinctUntilChanged()
 
     private val weatherSubFlow = combine(
         weatherRepo.currentWeatherFlow,
@@ -224,7 +256,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _citySearchResults
     ) { weather, loading, source, cities ->
         Triple(weather ?: WmoWeatherMapper.fallbackWeather, loading to source, cities)
-    }
+    }.distinctUntilChanged()
 
     private val productivityFlow = combine(
         weatherSubFlow,
@@ -239,7 +271,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
             todos = todos,
             events = events
         )
-    }
+    }.distinctUntilChanged()
 
     private val mailMetaFlow = combine(
         _selectedMailId,
@@ -248,10 +280,9 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _mailAiSummary,
         _pendingMailDraft
     ) { selId, loading, aiBusy, summary, draft ->
-        listOf(selId, loading, aiBusy, summary, draft)
-    }
+        MailMetaBundle(selId, loading, aiBusy, summary, draft)
+    }.distinctUntilChanged()
 
-    @Suppress("UNCHECKED_CAST")
     private val mailStateFlow = combine(
         mailDao.observeAccounts(),
         mailDao.observeRecentMessages(),
@@ -261,14 +292,14 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         MailUiState(
             accounts = accounts,
             messages = msgs,
-            selectedMessageId = meta[0] as String? ?: msgs.firstOrNull()?.id,
-            isLoading = meta[1] as Boolean,
-            isAiProcessing = meta[2] as Boolean,
-            aiSummary = meta[3] as String,
-            pendingDraft = meta[4] as MailDraftState?,
+            selectedMessageId = meta.selectedId ?: msgs.firstOrNull()?.id,
+            isLoading = meta.isLoading,
+            isAiProcessing = meta.isAiBusy,
+            aiSummary = meta.summary,
+            pendingDraft = meta.draft,
             showAccountDialog = showAcc
         )
-    }
+    }.distinctUntilChanged()
 
     private val ext40Flow = combine(
         customWidgetDao.observeAllCustomWidgets(),
@@ -277,7 +308,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         lanAdminServer.status
     ) { customWidgets, drawerSlots, mail, lan ->
         Ext40Bundle(customWidgets, drawerSlots, mail, lan)
-    }
+    }.distinctUntilChanged()
 
     private val labFlow = combine(
         _aiMessages,
@@ -287,7 +318,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _inspectedActivities
     ) { msgs, aiLoading, wn, radar, acts ->
         LabState(msgs, aiLoading, wn, radar, acts)
-    }
+    }.distinctUntilChanged()
 
     private val focusControlFlow = combine(
         _pomodoro,
@@ -296,7 +327,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         labFlow
     ) { pomo, dev, poemLoad, lab ->
         FocusControlBundle(pomo, dev, poemLoad, lab)
-    }
+    }.distinctUntilChanged()
 
     private val appSubFlow = combine(
         _installedApps,
@@ -304,8 +335,8 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _secretTrigger,
         _diagnostics
     ) { apps, vocab, secret, diag ->
-        listOf(apps, vocab, secret, diag)
-    }
+        AppSubBundle(apps, vocab, secret, diag)
+    }.distinctUntilChanged()
 
     private val metaSubFlow = combine(
         _isVaultUnlocked,
@@ -313,8 +344,8 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _statusBanner,
         _generatedSyncCode
     ) { unlocked, syncing, banner, code ->
-        listOf(unlocked, syncing, banner, code)
-    }
+        MetaSubBundle(unlocked, syncing, banner, code)
+    }.distinctUntilChanged()
 
     private val pen50Flow = combine(
         snapshotDao.observeRecentSnapshots(),
@@ -324,22 +355,21 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         _gestureHapticNonce
     ) { snaps, pending, mem, bypassSec, haptic ->
         Pen50Bundle(snaps, pending, mem, bypassSec, haptic)
-    }
+    }.distinctUntilChanged()
 
-    @Suppress("UNCHECKED_CAST")
     private val appMetaFlow = combine(appSubFlow, metaSubFlow, pen50Flow) { a, m, p50 ->
         AppMetaBundle(
-            installedApps = a[0] as List<InstalledAppInfo>,
-            vocabSession = a[1] as VocabSessionState,
-            secretTrigger = a[2] as SecretTriggerState,
-            diagnostics = a[3] as SystemDiagnostics,
-            isVaultUnlocked = m[0] as Boolean,
-            isSyncing = m[1] as Boolean,
-            statusBanner = m[2] as String?,
-            syncCode = m[3] as String?,
+            installedApps = a.apps,
+            vocabSession = a.vocab,
+            secretTrigger = a.secret,
+            diagnostics = a.diag,
+            isVaultUnlocked = m.isVaultUnlocked,
+            isSyncing = m.isSyncing,
+            statusBanner = m.banner,
+            syncCode = m.syncCode,
             pen50 = p50
         )
-    }
+    }.distinctUntilChanged()
 
     val uiState: StateFlow<PenOsUiState> = combine(
         coreFlow,
@@ -390,6 +420,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         initializeOfflineData()
+        loadInitialDeviceControl()
         observePreferencesForSystemGuards()
         observeVocabWords()
         observeMemoryPressure()
@@ -399,6 +430,12 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         refreshSystemDiagnostics()
         refreshPoem(force = false)
         refreshWeather(force = false)
+    }
+
+    private fun loadInitialDeviceControl() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _deviceControl.value = readDeviceControl()
+        }
     }
 
     override fun onCleared() {
@@ -453,8 +490,11 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun enforceRamAutoDowngradeIfNeeded(availMb: Int, forcedByTrim: Boolean) {
-        val cfg = prefs.currentConfig()
-        _memoryHealth.update { it.copy(availRamMb = availMb) }
+        val cfg = configState.value
+        val prevMem = _memoryHealth.value
+        if (abs(availMb - prevMem.availRamMb) >= 24) {
+            _memoryHealth.update { it.copy(availRamMb = availMb) }
+        }
         val isHeavyWallpaper = cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_MP4 ||
             cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_GIF
         if ((forcedByTrim || availMb in 1..109) && isHeavyWallpaper) {
@@ -555,7 +595,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun observePreferencesForSystemGuards() {
         viewModelScope.launch {
-            prefs.configFlow.collect { cfg ->
+            configState.collect { cfg ->
                 if (!hasCheckedInitialSetup) {
                     hasCheckedInitialSetup = true
                     if (!cfg.setupAssistantCompleted) {
@@ -568,10 +608,14 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                     scanPkg = cfg.scanAppPackage,
                     scanActivityClass = cfg.scanActivityClass
                 )
-                if (cfg.keepAliveEnabled) {
-                    PenKeepAliveService.start(app)
-                } else {
-                    PenKeepAliveService.stop(app)
+                // Edge-triggered KeepAlive IPC: only invoke start/stop when setting actually changes!
+                if (lastKeepAliveEnabled != cfg.keepAliveEnabled) {
+                    lastKeepAliveEnabled = cfg.keepAliveEnabled
+                    if (cfg.keepAliveEnabled) {
+                        PenKeepAliveService.start(app)
+                    } else {
+                        PenKeepAliveService.stop(app)
+                    }
                 }
                 if (_vocabSession.value.activeBook != cfg.activeVocabBook) {
                     _vocabSession.update { it.copy(activeBook = cfg.activeVocabBook) }
@@ -597,23 +641,56 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startLowPowerClockAndLoops() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
+            // Reusable thread-confined formatters: ZERO per-second SimpleDateFormat allocations & ZERO Main-Thread Binder IPC!
+            val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+            val secFmt = SimpleDateFormat("ss", Locale.getDefault())
+            val dateFmt = SimpleDateFormat("M月d日 E", Locale.CHINA)
+            val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
             var tickCount = 0
             while (isActive) {
                 val nowElapsed = SystemClock.elapsedRealtime()
                 val includeHeavy = (tickCount % 15 == 0)
-                val nextClock = readTelemetry(previous = _clockTick.value, includeHeavyStats = includeHeavy)
+                val nextClock = if (includeHeavy) {
+                    withContext(Dispatchers.IO) {
+                        readTelemetry(
+                            previous = _clockTick.value,
+                            includeHeavyStats = true,
+                            timeFmt = timeFmt,
+                            secFmt = secFmt,
+                            dateFmt = dateFmt,
+                            isoFmt = isoFmt
+                        )
+                    }
+                } else {
+                    readTelemetry(
+                        previous = _clockTick.value,
+                        includeHeavyStats = false,
+                        timeFmt = timeFmt,
+                        secFmt = secFmt,
+                        dateFmt = dateFmt,
+                        isoFmt = isoFmt
+                    )
+                }
                 _clockTick.value = nextClock
 
-                // Only propagate to monolithic uiState when minute/date or heavy telemetry changes!
+                // Only propagate to monolithic uiState on meaningful UI changes (NOT raw 1MB RAM jitter!)
                 val prevSlow = _slowTelemetry.value
-                if (includeHeavy ||
-                    nextClock.timeHHmm != prevSlow.timeHHmm ||
-                    nextClock.isoDate != prevSlow.isoDate
-                ) {
-                    _slowTelemetry.value = nextClock.copy(secondsStr = "00")
+                val slowChanged = nextClock.timeHHmm != prevSlow.timeHHmm ||
+                    nextClock.isoDate != prevSlow.isoDate ||
+                    nextClock.batteryPercent != prevSlow.batteryPercent ||
+                    nextClock.isCharging != prevSlow.isCharging ||
+                    nextClock.isWifiConnected != prevSlow.isWifiConnected
+                if (slowChanged) {
+                    _slowTelemetry.value = nextClock.copy(
+                        secondsStr = "00",
+                        availRamMb = prevSlow.availRamMb.takeIf { it > 0 } ?: nextClock.availRamMb
+                    )
                 }
                 tickCount++
+
+                val cfg = configState.value
 
                 // Pomodoro countdown tick (only mutates _pomodoro while running)
                 val pomo = _pomodoro.value
@@ -622,7 +699,7 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                         _pomodoro.value = pomo.copy(remainingSeconds = pomo.remainingSeconds - 1)
                     } else {
                         val wasBreak = pomo.isBreakMode
-                        val nextTotal = if (wasBreak) uiState.value.config.pomodoroMinutes * 60 else 5 * 60
+                        val nextTotal = if (wasBreak) cfg.pomodoroMinutes * 60 else 5 * 60
                         _pomodoro.value = pomo.copy(
                             isRunning = false,
                             isBreakMode = !wasBreak,
@@ -643,8 +720,6 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                 if ((secret.tapCount > 0 || secret.isArmed) && nowElapsed - lastSecretTapElapsedMs > 4500L) {
                     _secretTrigger.value = SecretTriggerState()
                 }
-
-                val cfg = uiState.value.config
 
                 // PenOS 5.0: Update 60s stock home bypass countdown
                 val bypassSec = AntiLockCoordinator.remainingStockHomeBypassSec()
@@ -1768,9 +1843,14 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             if (cfg.pinnedDockPackages.isEmpty() && apps.isNotEmpty()) {
-                apps.filter { !cfg.hiddenPackages.contains(it.packageName) }
+                val initialPinned = apps.asSequence()
+                    .filter { !cfg.hiddenPackages.contains(it.packageName) }
                     .take(4)
-                    .forEach { prefs.togglePinnedPackage(it.packageName) }
+                    .map { it.packageName }
+                    .toList()
+                if (initialPinned.isNotEmpty()) {
+                    prefs.setPinnedPackages(initialPinned)
+                }
             }
         }
     }
@@ -2364,12 +2444,15 @@ class PenOsViewModel(application: Application) : AndroidViewModel(application) {
         canWriteSystemBrightness = SystemTakeoverHelper.canWriteSystemSettings(app)
     )
 
-    private fun readTelemetry(previous: ClockTelemetryState, includeHeavyStats: Boolean): ClockTelemetryState {
+    private fun readTelemetry(
+        previous: ClockTelemetryState,
+        includeHeavyStats: Boolean,
+        timeFmt: SimpleDateFormat,
+        secFmt: SimpleDateFormat,
+        dateFmt: SimpleDateFormat,
+        isoFmt: SimpleDateFormat
+    ): ClockTelemetryState {
         val now = Date()
-        val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-        val secFmt = SimpleDateFormat("ss", Locale.getDefault())
-        val dateFmt = SimpleDateFormat("M月d日 E", Locale.CHINA)
-        val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
         if (!includeHeavyStats) {
             return previous.copy(

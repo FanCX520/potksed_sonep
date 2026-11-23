@@ -1,10 +1,12 @@
 package com.example.data.local
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.Relation
 
+@Immutable
 @Entity(tableName = "vocab_words")
 data class VocabWordEntity(
     @PrimaryKey val id: String,
@@ -21,6 +23,7 @@ data class VocabWordEntity(
     val visualCue: String = ""
 )
 
+@Immutable
 @Entity(tableName = "vocab_progress")
 data class VocabProgressEntity(
     @PrimaryKey val wordId: String,
@@ -37,6 +40,7 @@ data class VocabProgressEntity(
     }
 }
 
+@Immutable
 data class VocabWordWithProgress(
     @Embedded val word: VocabWordEntity,
     @Relation(
@@ -46,6 +50,7 @@ data class VocabWordWithProgress(
     val progress: VocabProgressEntity?
 )
 
+@Immutable
 @Entity(tableName = "cached_poems")
 data class CachedPoemEntity(
     @PrimaryKey val id: String,
@@ -57,6 +62,7 @@ data class CachedPoemEntity(
     val fetchedAt: Long
 )
 
+@Immutable
 @Entity(tableName = "todo_items")
 data class TodoItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
@@ -67,6 +73,7 @@ data class TodoItemEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 @Entity(tableName = "calendar_events")
 data class CalendarEventEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
@@ -76,6 +83,7 @@ data class CalendarEventEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 @Entity(tableName = "cached_weather")
 data class CachedWeatherEntity(
     @PrimaryKey val id: String = "current",
@@ -96,6 +104,7 @@ data class CachedWeatherEntity(
  * PenOS 4.0 Declarative Custom Widget authored by AI Harness MCP or LAN Web Console.
  * Strictly data-driven JSON DSL (zero executable code / zero DEX).
  */
+@Immutable
 @Entity(tableName = "custom_widgets")
 data class CustomWidgetEntity(
     @PrimaryKey val id: String,
@@ -118,6 +127,7 @@ data class CustomWidgetEntity(
  * Apple TV Up-Swipe Drawer custom slot item.
  * Types: CUSTOM_WIDGET | BUILTIN_CLOCK | BUILTIN_MAIL | AI_SWITCHER | APP_SHORTCUT | ACTION_TILE
  */
+@Immutable
 @Entity(tableName = "drawer_slots")
 data class DrawerSlotEntity(
     @PrimaryKey val id: String,
@@ -141,6 +151,7 @@ data class DrawerSlotEntity(
 /**
  * Multi-account IMAP/SMTP Email configuration stored strictly locally on device.
  */
+@Immutable
 @Entity(tableName = "mail_accounts")
 data class MailAccountEntity(
     @PrimaryKey val id: String,
@@ -160,6 +171,7 @@ data class MailAccountEntity(
 /**
  * Local offline cache of fetched emails for instant reading & AI/MCP summarization.
  */
+@Immutable
 @Entity(tableName = "mail_messages")
 data class MailMessageEntity(
     @PrimaryKey val id: String, // "$accountId:$uid"
@@ -180,6 +192,7 @@ data class MailMessageEntity(
  * PenOS 5.0 Desktop Configuration Snapshot for instant Harness MCP undo/rollback
  * and full configuration backup/restore.
  */
+@Immutable
 @Entity(tableName = "desktop_snapshots")
 data class DesktopSnapshotEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,

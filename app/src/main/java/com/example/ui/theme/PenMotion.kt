@@ -28,7 +28,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -156,15 +155,17 @@ object PenMotion {
 }
 
 /**
- * Lightweight GPU-layer press scale without blocking normal click events.
- * Automatically degrades cleanly under NONE/FAST motion tiers to avoid frame drops on Mali-400.
+ * Lightweight GPU-layer press scale without deprecated Modifier.composed sub-composition overhead.
+ * Zero-cost no-op under NONE tier or zeroOverdraw mode (no coroutine, no state, no graphicsLayer).
  */
+@Composable
 fun Modifier.springPressScale(
     enabled: Boolean = true,
     pressedScale: Float = 0.96f
-): Modifier = composed {
+): Modifier {
     val tier = LocalPenMotionTier.current
-    if (!enabled || tier == PenMotionTier.NONE) return@composed this
+    val zeroOverdraw = LocalZeroOverdraw.current
+    if (!enabled || tier == PenMotionTier.NONE || zeroOverdraw) return this
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (pressed) pressedScale else 1f,
@@ -175,10 +176,12 @@ fun Modifier.springPressScale(
         },
         label = "pen_press_scale"
     )
-    this
+    return this
         .graphicsLayer {
-            scaleX = scale
-            scaleY = scale
+            if (scale != 1f) {
+                scaleX = scale
+                scaleY = scale
+            }
         }
         .pointerInput(enabled, tier) {
             while (true) {
@@ -193,17 +196,18 @@ fun Modifier.springPressScale(
 }
 
 /**
- * Hardware-tuned press scale + click handler using MutableInteractionSource.
+ * Hardware-tuned press scale + click handler without deprecated Modifier.composed overhead.
  */
+@Composable
 fun Modifier.springPressScale(
     pressedScale: Float = 0.96f,
     enabled: Boolean = true,
     onClick: () -> Unit
-): Modifier = composed {
+): Modifier {
     val tier = LocalPenMotionTier.current
     val zeroOverdraw = LocalZeroOverdraw.current
     if (!enabled || tier == PenMotionTier.NONE || zeroOverdraw) {
-        return@composed this.clickable(enabled = enabled, onClick = onClick)
+        return this.clickable(enabled = enabled, onClick = onClick)
     }
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -216,7 +220,7 @@ fun Modifier.springPressScale(
         },
         label = "pen_click_spring_scale"
     )
-    this
+    return this
         .graphicsLayer {
             if (scale != 1f) {
                 scaleX = scale

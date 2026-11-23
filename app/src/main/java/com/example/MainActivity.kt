@@ -27,7 +27,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,6 +51,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -813,9 +816,18 @@ private fun PenDisplayAdaptiveShell(
 ) {
     val isLight = PenTheme.colors.isAppleLight
     val isLiveWallpaper = state.config.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_LIVE
-    BoxWithConstraints(
+    val density = LocalDensity.current
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val maxWidthDp = if (containerSize.width > 0) with(density) { containerSize.width.toDp() } else 640.dp
+    val maxHeightDp = if (containerSize.height > 0) with(density) { containerSize.height.toDp() } else 360.dp
+    val isRealPenScreen = containerSize.height > 0 && maxHeightDp <= 250.dp
+    val useHardwareFrame = !isRealPenScreen && state.config.penFramePreviewEnabled
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
+            .onSizeChanged { containerSize = it }
             .background(
                 when {
                     isLiveWallpaper -> Color.Transparent
@@ -826,16 +838,13 @@ private fun PenDisplayAdaptiveShell(
             .safeDrawingPadding(),
         contentAlignment = Alignment.Center
     ) {
-        val isRealPenScreen = maxHeight <= 250.dp
-        val useHardwareFrame = !isRealPenScreen && state.config.penFramePreviewEnabled
-
         if (!useHardwareFrame) {
             Box(modifier = Modifier.fillMaxSize()) {
                 content()
             }
         } else {
-            val targetWidth = minOf((maxWidth - 20.dp).coerceAtLeast(120.dp), 640.dp)
-            val targetHeight = minOf((maxHeight - 48.dp).coerceAtLeast(120.dp), 178.dp)
+            val targetWidth = minOf((maxWidthDp - 20.dp).coerceAtLeast(120.dp), 640.dp)
+            val targetHeight = minOf((maxHeightDp - 48.dp).coerceAtLeast(120.dp), 178.dp)
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -849,14 +858,17 @@ private fun PenDisplayAdaptiveShell(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "PenOS 5.5 · MT6582 640×172 横屏视窗（原生极速/Compose双引擎 · 上滑TV抽屉→再上滑番茄 / 下滑控制中心）",
+                        text = "PenOS 5.5 · 640×172 词典笔模拟视窗（上滑抽屉 / 下滑控制中心）",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isLight) Color(0xFF6E6E73) else PenTheme.colors.textMuted
+                        color = if (isLight) Color(0xFF6E6E73) else PenTheme.colors.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp)
                     )
                     Surface(
                         shape = RoundedCornerShape(980.dp),
                         color = if (isLight) Color.White else Color(0xFF161C27),
-                        border = if (isLight) null else BorderStroke(1.dp, PenTheme.colors.glassBorder),
+                        border = BorderStroke(1.dp, if (isLight) Color(0xFFD5DCE4) else PenTheme.colors.glassBorder),
                         modifier = Modifier
                             .clip(RoundedCornerShape(980.dp))
                             .clickable { onTogglePreviewFrame(false) }
@@ -870,14 +882,15 @@ private fun PenDisplayAdaptiveShell(
                     }
                 }
 
+                // Zero shadowElevation: eliminates RenderThread offscreen shadow/clip penalty around AndroidView
                 Surface(
                     modifier = Modifier
                         .width(targetWidth)
                         .height(targetHeight),
-                    shape = RoundedCornerShape(26.dp),
+                    shape = RoundedCornerShape(22.dp),
                     color = if (isLiveWallpaper) Color.Transparent else if (isLight) Color.White else Color.Black,
-                    border = BorderStroke(2.dp, if (isLight) Color(0xFFDEDFE2) else Color(0xFF283142)),
-                    shadowElevation = if (isLight) 4.dp else 12.dp
+                    border = BorderStroke(1.5.dp, if (isLight) Color(0xFFD0D7E2) else Color(0xFF283142)),
+                    shadowElevation = 0.dp
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         content()

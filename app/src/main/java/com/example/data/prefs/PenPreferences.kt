@@ -17,8 +17,11 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.ui.theme.FontSlotSpec
 import com.example.ui.theme.GranularTypographyProfile
 import com.example.ui.theme.PenMotionTier
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import java.security.SecureRandom
 
@@ -137,7 +140,7 @@ data class PenConfig(
     // Security & Preview
     val vaultPin: String = "",
     val keepAliveEnabled: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.O,
-    val penFramePreviewEnabled: Boolean = true,
+    val penFramePreviewEnabled: Boolean = false,
     // Vocab & Poetry
     val activeVocabBook: String = "highschool",
     val vocabDailyGoal: Int = 20,
@@ -486,7 +489,7 @@ class PenPreferencesRepository(private val context: Context) {
             lowMemMode = prefs[Keys.LOW_MEM_MODE] ?: false,
             vaultPin = prefs[Keys.VAULT_PIN].orEmpty(),
             keepAliveEnabled = prefs[Keys.KEEP_ALIVE_ENABLED] ?: (Build.VERSION.SDK_INT < Build.VERSION_CODES.O),
-            penFramePreviewEnabled = prefs[Keys.PEN_FRAME_PREVIEW] ?: true,
+            penFramePreviewEnabled = prefs[Keys.PEN_FRAME_PREVIEW] ?: false,
             activeVocabBook = prefs[Keys.ACTIVE_VOCAB_BOOK] ?: "highschool",
             vocabDailyGoal = prefs[Keys.VOCAB_DAILY_GOAL] ?: 20,
             jinrishiciToken = prefs[Keys.JINRISHICI_TOKEN].orEmpty(),
@@ -517,7 +520,7 @@ class PenPreferencesRepository(private val context: Context) {
             mailAutoSyncEnabled = prefs[Keys.MAIL_AUTO_SYNC_ENABLED] ?: true,
             lastMailAutoSyncAt = prefs[Keys.LAST_MAIL_AUTO_SYNC_AT] ?: 0L
         )
-    }
+    }.flowOn(Dispatchers.IO).distinctUntilChanged()
 
     suspend fun currentConfig(): PenConfig = configFlow.first()
 
@@ -729,6 +732,16 @@ class PenPreferencesRepository(private val context: Context) {
                 current.add(packageName)
             }
             prefs[Keys.PINNED_DOCK_CSV] = current.joinToString(",")
+        }
+    }
+
+    suspend fun setPinnedPackages(packages: List<String>) {
+        context.penDataStore.edit { prefs ->
+            prefs[Keys.PINNED_DOCK_CSV] = packages
+                .filter { it.isNotBlank() }
+                .distinct()
+                .take(8)
+                .joinToString(",")
         }
     }
 

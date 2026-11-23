@@ -1,6 +1,5 @@
 package com.example.widgets
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -38,25 +37,29 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.system.AppIconCache
 import com.example.system.InstalledAppInfo
+import com.example.system.rememberSampledBitmap
 import com.example.ui.PenOsUiState
 import com.example.ui.theme.PenTheme
 import com.example.ui.theme.springPressScale
-import java.io.File
 
 /**
  * Shared modular widget container honoring both themes + Apple spring press scale.
@@ -111,20 +114,27 @@ fun PenAppIconImage(
     cornerDp: Dp = 9.dp
 ) {
     val colors = PenTheme.colors
-    val customBitmap = remember(customIconSpec) {
-        if (!customIconSpec.isNullOrBlank() && !customIconSpec.startsWith("color:")) {
-            val f = File(customIconSpec)
-            if (f.exists()) {
-                runCatching { BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap() }.getOrNull()
-            } else null
-        } else null
-    }
+    val context = LocalContext.current
+    val customPath = if (!customIconSpec.isNullOrBlank() && !customIconSpec.startsWith("color:")) customIconSpec else ""
+    val customBitmap = if (customPath.isNotBlank()) {
+        rememberSampledBitmap(customPath, maxWidthPx = 128, maxHeightPx = 128)
+    } else null
     val customColor = remember(customIconSpec) {
         if (customIconSpec?.startsWith("color:") == true) {
             runCatching {
                 Color(android.graphics.Color.parseColor(customIconSpec.removePrefix("color:")))
             }.getOrNull()
         } else null
+    }
+    val cachedAppIcon = remember(appInfo.packageName) { AppIconCache.peek(appInfo.packageName) }
+    val loadedAppIcon: ImageBitmap? by produceState(
+        initialValue = cachedAppIcon,
+        key1 = appInfo.packageName,
+        key2 = customIconSpec
+    ) {
+        if (customIconSpec.isNullOrBlank() && value == null) {
+            value = AppIconCache.loadIcon(context, appInfo.packageName, sizePx = 72)
+        }
     }
 
     when {
@@ -154,9 +164,9 @@ fun PenAppIconImage(
                 )
             }
         }
-        appInfo.iconBitmap != null -> {
+        loadedAppIcon != null -> {
             Image(
-                bitmap = appInfo.iconBitmap.asImageBitmap(),
+                bitmap = loadedAppIcon!!,
                 contentDescription = appInfo.label,
                 modifier = Modifier
                     .size(sizeDp)

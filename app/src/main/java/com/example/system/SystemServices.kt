@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
+import androidx.compose.runtime.Immutable
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
@@ -186,6 +187,7 @@ class PenKeepAliveService : Service() {
     }
 }
 
+@Immutable
 data class SystemDiagnostics(
     val currentDefaultHomePackage: String,
     val isPenOsDefaultHome: Boolean,

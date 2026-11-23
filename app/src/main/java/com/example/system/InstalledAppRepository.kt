@@ -8,18 +8,68 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.util.LruCache
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+@Immutable
 data class InstalledAppInfo(
     val packageName: String,
     val label: String,
     val launchActivityName: String = "",
     val homeActivityName: String = "",
     val isHomeLauncher: Boolean = false,
-    val isLikelyScanApp: Boolean = false,
-    val iconBitmap: Bitmap? = null
+    val isLikelyScanApp: Boolean = false
 )
+
+/**
+ * On-demand bounded LRU cache for app launcher icons (max 48 icons, decoded strictly on Dispatchers.IO).
+ * Eliminates cold-start decoding of 100-250 icons into uiState.
+ */
+object AppIconCache {
+    private val cache = object : LruCache<String, ImageBitmap>(48) {}
+
+    fun peek(packageName: String): ImageBitmap? =
+        if (packageName.isBlank()) null else synchronized(cache) { cache.get(packageName) }
+
+    suspend fun loadIcon(context: Context, packageName: String, sizePx: Int = 72): ImageBitmap? {
+        if (packageName.isBlank()) return null
+        peek(packageName)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            peek(packageName)?.let { return@withContext it }
+            val decoded = try {
+                val drawable = context.packageManager.getApplicationIcon(packageName)
+                drawableToCompactBitmap(drawable, sizePx)?.asImageBitmap()
+            } catch (_: Exception) {
+                null
+            }
+            if (decoded != null) {
+                synchronized(cache) { cache.put(packageName, decoded) }
+            }
+            decoded
+        }
+    }
+
+    fun clear() {
+        synchronized(cache) { cache.evictAll() }
+    }
+
+    internal fun drawableToCompactBitmap(drawable: Drawable?, sizePx: Int): Bitmap? {
+        if (drawable == null || sizePx <= 0) return null
+        return try {
+            val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmap
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
 
 class InstalledAppRepository(private val context: Context) {
 
@@ -57,12 +107,6 @@ class InstalledAppRepository(private val context: Context) {
             val lowerPkg = pkg.lowercase()
             val likelyScan = scanKeywords.any { kw -> lowerLabel.contains(kw) || lowerPkg.contains(kw) }
 
-            val smallIcon = try {
-                drawableToCompactBitmap(resolveInfo.loadIcon(pm), 72)
-            } catch (_: Exception) {
-                null
-            }
-
             result.add(
                 InstalledAppInfo(
                     packageName = pkg,
@@ -70,8 +114,7 @@ class InstalledAppRepository(private val context: Context) {
                     launchActivityName = ai.name.orEmpty(),
                     homeActivityName = homeActivityMap[pkg].orEmpty(),
                     isHomeLauncher = homeActivityMap.containsKey(pkg),
-                    isLikelyScanApp = likelyScan,
-                    iconBitmap = smallIcon
+                    isLikelyScanApp = likelyScan
                 )
             )
         }
@@ -94,9 +137,6 @@ class InstalledAppRepository(private val context: Context) {
                     isHomeLauncher = true,
                     isLikelyScanApp = scanKeywords.any {
                         label.lowercase().contains(it) || homePkg.lowercase().contains(it)
-                    },
-                    iconBitmap = appInfo?.let {
-                        try { drawableToCompactBitmap(pm.getApplicationIcon(it), 72) } catch (_: Exception) { null }
                     }
                 )
             )
@@ -208,17 +248,4 @@ class InstalledAppRepository(private val context: Context) {
         } else {
             pm.queryIntentActivities(intent, 0)
         }
-
-    private fun drawableToCompactBitmap(drawable: Drawable?, sizePx: Int): Bitmap? {
-        if (drawable == null || sizePx <= 0) return null
-        return try {
-            val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, canvas.width, canvas.height)
-            drawable.draw(canvas)
-            bitmap
-        } catch (_: Exception) {
-            null
-        }
-    }
 }

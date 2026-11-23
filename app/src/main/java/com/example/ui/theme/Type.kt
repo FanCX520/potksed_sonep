@@ -1,6 +1,7 @@
 package com.example.ui.theme
 
 import android.graphics.Typeface
+import android.os.Build
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.text.TextStyle
@@ -12,52 +13,21 @@ import com.example.R
 import java.io.File
 
 /**
- * Bundled local static font families (installed via font-util, zero runtime network dependency).
+ * Bundled local static font families (1 handle per static TTF file to minimize memory/loader overhead).
  */
-val OutfitFontFamily = FontFamily(
-    Font(R.font.outfit, FontWeight.Light),
-    Font(R.font.outfit, FontWeight.Normal),
-    Font(R.font.outfit, FontWeight.Medium),
-    Font(R.font.outfit, FontWeight.SemiBold),
-    Font(R.font.outfit, FontWeight.Bold)
-)
+val OutfitFontFamily = FontFamily(Font(R.font.outfit, FontWeight.Normal))
 
 val UnifiedClockFontFamily: FontFamily = OutfitFontFamily
 
-val JetBrainsMonoFontFamily = FontFamily(
-    Font(R.font.jetbrains_mono, FontWeight.Normal),
-    Font(R.font.jetbrains_mono, FontWeight.Medium),
-    Font(R.font.jetbrains_mono, FontWeight.Bold)
-)
+val JetBrainsMonoFontFamily = FontFamily(Font(R.font.jetbrains_mono, FontWeight.Normal))
 
-val InterFontFamily = FontFamily(
-    Font(R.font.inter, FontWeight.Light),
-    Font(R.font.inter, FontWeight.Normal),
-    Font(R.font.inter, FontWeight.Medium),
-    Font(R.font.inter, FontWeight.SemiBold),
-    Font(R.font.inter, FontWeight.Bold)
-)
+val InterFontFamily = FontFamily(Font(R.font.inter, FontWeight.Normal))
 
-val NotoSerifScFontFamily = FontFamily(
-    Font(R.font.noto_serif_sc, FontWeight.Normal),
-    Font(R.font.noto_serif_sc, FontWeight.Medium),
-    Font(R.font.noto_serif_sc, FontWeight.SemiBold),
-    Font(R.font.noto_serif_sc, FontWeight.Bold)
-)
+val NotoSerifScFontFamily = FontFamily(Font(R.font.noto_serif_sc, FontWeight.Normal))
 
-val PlayfairDisplayFontFamily = FontFamily(
-    Font(R.font.playfair_display, FontWeight.Normal),
-    Font(R.font.playfair_display, FontWeight.Medium),
-    Font(R.font.playfair_display, FontWeight.SemiBold),
-    Font(R.font.playfair_display, FontWeight.Bold)
-)
+val PlayfairDisplayFontFamily = FontFamily(Font(R.font.playfair_display, FontWeight.Normal))
 
-val SpaceGroteskFontFamily = FontFamily(
-    Font(R.font.space_grotesk, FontWeight.Normal),
-    Font(R.font.space_grotesk, FontWeight.Medium),
-    Font(R.font.space_grotesk, FontWeight.SemiBold),
-    Font(R.font.space_grotesk, FontWeight.Bold)
-)
+val SpaceGroteskFontFamily = FontFamily(Font(R.font.space_grotesk, FontWeight.Normal))
 
 object PenFontCatalog {
     const val FAMILY_OUTFIT = "outfit"
@@ -90,9 +60,9 @@ object PenFontCatalog {
     }
 
     fun resolve(familyKey: String, externalPath: String = ""): FontFamily {
-        if (externalPath.isNotBlank() &&
-            !failedExternalPaths.contains(externalPath) &&
-            (familyKey == FAMILY_EXTERNAL || familyKey == FAMILY_NOTO_SERIF_SC || File(externalPath).exists())
+        if (familyKey == FAMILY_EXTERNAL &&
+            externalPath.isNotBlank() &&
+            !failedExternalPaths.contains(externalPath)
         ) {
             val cached = synchronized(externalCache) { externalCache[externalPath] }
             if (cached != null) return cached
@@ -158,8 +128,8 @@ data class FontSlotSpec(
 @Immutable
 data class GranularTypographyProfile(
     val clock: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_OUTFIT, 1.0f, 700, -0.8f),
-    val title: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_INTER, 1.0f, 600, -0.15f),
-    val body: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_INTER, 1.0f, 400, 0f),
+    val title: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_SYSTEM_SANS, 1.0f, 600, -0.15f),
+    val body: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_SYSTEM_SANS, 1.0f, 400, 0f),
     val poetry: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_NOTO_SERIF_SC, 1.0f, 500, 0.3f),
     val metric: FontSlotSpec = FontSlotSpec(PenFontCatalog.FAMILY_JETBRAINS, 1.0f, 600, 0.1f)
 ) {
@@ -218,6 +188,8 @@ fun buildDynamicTypography(
     val bodyWeight = PenFontCatalog.weightFromInt(profile.body.weight)
     val metricWeight = PenFontCatalog.weightFromInt(profile.metric.weight)
 
+    val tnumSetting: String? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) "tnum" else null
+
     return Typography(
         displayLarge = TextStyle(
             fontFamily = clockFamily,
@@ -225,7 +197,7 @@ fun buildDynamicTypography(
             fontSize = (66f * cs).sp,
             lineHeight = (70f * cs).sp,
             letterSpacing = (-1.2f + profile.clock.letterSpacingSp).sp,
-            fontFeatureSettings = "tnum"
+            fontFeatureSettings = tnumSetting
         ),
         displayMedium = TextStyle(
             fontFamily = clockFamily,
@@ -233,7 +205,7 @@ fun buildDynamicTypography(
             fontSize = (42f * cs).sp,
             lineHeight = (46f * cs).sp,
             letterSpacing = (-0.4f + profile.clock.letterSpacingSp).sp,
-            fontFeatureSettings = "tnum"
+            fontFeatureSettings = tnumSetting
         ),
         headlineMedium = TextStyle(
             fontFamily = clockFamily,
@@ -241,7 +213,7 @@ fun buildDynamicTypography(
             fontSize = ((if (isAppleLight) 21f else 22f) * ts).sp,
             lineHeight = (25f * ts).sp,
             letterSpacing = profile.title.letterSpacingSp.sp,
-            fontFeatureSettings = "tnum"
+            fontFeatureSettings = tnumSetting
         ),
         titleMedium = TextStyle(
             fontFamily = titleFamily,
@@ -277,7 +249,7 @@ fun buildDynamicTypography(
             fontSize = (11f * ms).sp,
             lineHeight = (14f * ms).sp,
             letterSpacing = profile.metric.letterSpacingSp.sp,
-            fontFeatureSettings = "tnum"
+            fontFeatureSettings = tnumSetting
         ),
         labelSmall = TextStyle(
             fontFamily = metricFamily,
@@ -285,7 +257,7 @@ fun buildDynamicTypography(
             fontSize = (10f * ms).sp,
             lineHeight = (13f * ms).sp,
             letterSpacing = profile.metric.letterSpacingSp.sp,
-            fontFeatureSettings = "tnum"
+            fontFeatureSettings = tnumSetting
         )
     )
 }

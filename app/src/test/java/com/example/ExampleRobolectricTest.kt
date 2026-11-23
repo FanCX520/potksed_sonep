@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.view.MotionEvent
 import android.view.View
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -20,10 +21,16 @@ import com.example.data.remote.WmoWeatherMapper
 import com.example.system.AntiLockCoordinator
 import com.example.system.QrCodeMatrix
 import com.example.system.SafeMediaImporter
+import com.example.ui.ClockTelemetryState
+import com.example.ui.PenOsUiState
+import com.example.ui.desktop.DirectionLockSwipeLayout
+import com.example.ui.desktop.NativeTurboDesktopCallbacks
+import com.example.ui.desktop.NativeTurboDesktopContainer
 import com.example.ui.desktop.SwipeDirectionClassifier
 import com.example.ui.desktop.SwipeDirectionDecision
 import com.example.ui.theme.FontSlotSpec
 import com.example.ui.theme.GranularTypographyProfile
+import com.example.ui.theme.PenFontCatalog
 import com.example.widgets.CustomWidgetDslParser
 import com.example.widgets.CustomWidgetTemplates
 import com.example.widgets.DslWidgetBlock
@@ -507,5 +514,65 @@ class ExampleRobolectricTest {
         // Reset back to MT6582 defaults
         prefs.setDesktopEngineMode(PenConfig.ENGINE_NATIVE_TURBO)
         prefs.setZeroOverdrawMode(true)
+    }
+
+    @Test
+    fun auditBug01RamJitterNeverRebuildsNativeDeck() {
+        val app = ApplicationProvider.getApplicationContext<PenOsApplication>()
+        val container = NativeTurboDesktopContainer(app, app.nativeWidgetHostManager, NativeTurboDesktopCallbacks())
+
+        val baseState = PenOsUiState(
+            clock = ClockTelemetryState(timeHHmm = "10:20", availRamMb = 340, isWifiConnected = true)
+        )
+        container.bindState(baseState)
+        assertEquals(1, container.deckRebuildCount)
+        assertNotNull("Discovery tail card must be mounted", container.findViewWithTag<View>("native_card_more_widgets"))
+
+        // Simulate 15-second RAM jitter fluctuations -> MUST NOT destroy/rebuild deck!
+        container.bindState(baseState.copy(clock = baseState.clock.copy(availRamMb = 318)))
+        container.bindState(baseState.copy(clock = baseState.clock.copy(availRamMb = 295)))
+        container.bindState(baseState.copy(clock = baseState.clock.copy(availRamMb = 362)))
+        assertEquals("RAM fluctuations must NEVER trigger deck rebuild", 1, container.deckRebuildCount)
+    }
+
+    @Test
+    fun auditBug04EmptySpaceVerticalSwipeTriggersCallbacks() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val layout = DirectionLockSwipeLayout(context)
+        layout.swipeThresholdPx = 30f
+        var upCount = 0
+        var downCount = 0
+        layout.onVerticalSwipeUp = { upCount++ }
+        layout.onVerticalSwipeDown = { downCount++ }
+
+        // Empty-space swipe UP: ACTION_DOWN -> ACTION_MOVE -> ACTION_UP
+        val downUp = MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 100f, 200f, 0)
+        assertTrue("ACTION_DOWN must return true to keep touch chain alive on empty space", layout.onTouchEvent(downUp))
+        val moveUp = MotionEvent.obtain(0L, 20L, MotionEvent.ACTION_MOVE, 102f, 110f, 0)
+        assertTrue(layout.onTouchEvent(moveUp))
+        val endUp = MotionEvent.obtain(0L, 40L, MotionEvent.ACTION_UP, 102f, 100f, 0)
+        layout.onTouchEvent(endUp)
+        assertEquals(1, upCount)
+        assertEquals(0, downCount)
+
+        // Empty-space swipe DOWN
+        val downDn = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 100f, 60f, 0)
+        assertTrue(layout.onTouchEvent(downDn))
+        val moveDn = MotionEvent.obtain(100L, 120L, MotionEvent.ACTION_MOVE, 101f, 160f, 0)
+        assertTrue(layout.onTouchEvent(moveDn))
+        val endDn = MotionEvent.obtain(100L, 140L, MotionEvent.ACTION_UP, 101f, 170f, 0)
+        layout.onTouchEvent(endDn)
+        assertEquals(1, downCount)
+
+        listOf(downUp, moveUp, endUp, downDn, moveDn, endDn).forEach { it.recycle() }
+    }
+
+    @Test
+    fun auditBug02And08DefaultsFullScreenAdaptiveAndNativeCjkTypography() {
+        val cfg = PenConfig()
+        assertFalse("Phones should default to full-screen adaptive mode (not 640x178 preview frame)", cfg.penFramePreviewEnabled)
+        assertEquals(PenFontCatalog.FAMILY_SYSTEM_SANS, cfg.typographyProfile.body.familyKey)
+        assertEquals(PenFontCatalog.FAMILY_SYSTEM_SANS, cfg.typographyProfile.title.familyKey)
+        assertEquals(PenFontCatalog.FAMILY_OUTFIT, cfg.typographyProfile.clock.familyKey)
     }
 }
