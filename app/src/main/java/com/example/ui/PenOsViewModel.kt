@@ -1,7 +1,7 @@
 package com.example.ui
 
-import android.app.ActivityManager
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -10,2501 +10,752 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
-import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.PenOsApplication
-import com.example.data.local.CachedPoemEntity
-import com.example.data.local.CachedWeatherEntity
-import com.example.data.local.CalendarEventEntity
-import com.example.data.local.CustomWidgetEntity
-import com.example.data.local.DesktopSnapshotEntity
-import com.example.data.local.DrawerSlotEntity
-import com.example.data.local.MailAccountEntity
-import com.example.data.local.MailMessageEntity
 import com.example.data.local.OfflineSeedData
-import com.example.data.local.TodoItemEntity
 import com.example.data.local.VocabCatalogExpanded
 import com.example.data.local.VocabProgressEntity
-import com.example.data.local.VocabWordWithProgress
+import com.example.data.local.VocabWordEntity
 import com.example.data.prefs.AiApiProfile
-import com.example.data.prefs.AiPreset
-import com.example.data.prefs.MultiClockConfig
 import com.example.data.prefs.PenConfig
 import com.example.data.remote.AiChatMessage
-import com.example.data.remote.WeatherCityOption
-import com.example.data.remote.WmoWeatherMapper
 import com.example.system.AntiLockCoordinator
-import com.example.system.BitmapDecodeCache
-import com.example.system.InstalledAppInfo
-import com.example.system.LanServerStatus
 import com.example.system.PenKeepAliveService
 import com.example.system.SafeMediaImporter
-import com.example.system.SystemDiagnostics
 import com.example.system.SystemTakeoverHelper
-import com.example.system.WhiteNoiseType
-import com.example.data.remote.PenMcpToolResult
-import com.example.ui.theme.FontSlotSpec
-import com.example.ui.theme.PenFontCatalog
-import com.example.ui.theme.PenMotionTier
-import com.example.widgets.CustomWidgetDslParser
-import com.example.widgets.CustomWidgetTemplates
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class PenOsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as PenOsApplication
     private val prefs = app.preferences
     private val vocabDao = app.database.vocabDao()
-    private val todoDao = app.database.todoDao()
-    private val calendarEventDao = app.database.calendarEventDao()
-    private val customWidgetDao = app.database.customWidgetDao()
-    private val drawerSlotDao = app.database.drawerSlotDao()
-    private val mailDao = app.database.mailDao()
-    private val snapshotDao = app.database.desktopSnapshotDao()
-    private val snapshotManager = app.snapshotManager
-    private val poetryRepo = app.poetryRepository
-    private val weatherRepo = app.weatherRepository
-    private val syncManager = app.vocabSyncManager
-    private val appRepo = app.installedAppRepository
-    private val whiteNoise = app.whiteNoiseEngine
-    private val aiMcpClient = app.aiMcpClient
-    private val mailClient = app.mailClient
-    val lanAdminServer = app.lanAdminServer
-    val nativeWidgetHost = app.nativeWidgetHostManager
+    private val installedAppsRepo = app.installedAppRepository
+    private val aiClient = app.aiMcpClient
 
-    private val _screenMode = MutableStateFlow(PenScreenMode.DESKTOP)
-    private val _activeOverlay = MutableStateFlow(DesktopOverlay.NONE)
+    // 1. Isolated 1-second clock flow (NEVER triggers main uiState recomposition!)
+    private val _clockFlow = MutableStateFlow(buildClockSnapshot())
+    val clockFlow: StateFlow<ClockSnapshot> = _clockFlow.asStateFlow()
 
-    // Single shared config StateFlow (parsed once on Dispatchers.IO with distinctUntilChanged)
-    private val configState: StateFlow<PenConfig> = prefs.configFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.Eagerly,
-        initialValue = PenConfig()
-    )
+    // 2. Isolated Focus / Pomodoro flow
+    private val _pomodoroFlow = MutableStateFlow(PomodoroState())
+    val pomodoroFlow: StateFlow<PomodoroState> = _pomodoroFlow.asStateFlow()
 
-    // 60fps Architecture: zero main-thread Binder IPC during ViewModel construction!
-    private val _clockTick = MutableStateFlow(ClockTelemetryState())
-    val clockTickFlow: StateFlow<ClockTelemetryState> = _clockTick.asStateFlow()
+    // 3. Isolated AI Chat + External MCP flow
+    private val _aiFlow = MutableStateFlow(AiSessionState())
+    val aiFlow: StateFlow<AiSessionState> = _aiFlow.asStateFlow()
 
-    // Slow telemetry in uiState updates ONLY when minute/date/battery/wifi changes (NOT raw RAM jitter)
-    private val _slowTelemetry = MutableStateFlow(ClockTelemetryState())
+    // 4. Lean main launcher state
+    private val _uiState = MutableStateFlow(PenOsUiState())
+    val uiState: StateFlow<PenOsUiState> = _uiState.asStateFlow()
 
-    private val _pomodoro = MutableStateFlow(PomodoroState())
-    private val _deviceControl = MutableStateFlow(DeviceControlState())
-    private val _isPoemLoading = MutableStateFlow(false)
-    private val _isWeatherLoading = MutableStateFlow(false)
-    private val _weatherSourceStatus = MutableStateFlow("本地缓存")
-    private val _citySearchResults = MutableStateFlow(WmoWeatherMapper.presetCities.take(16))
-    private val _installedApps = MutableStateFlow<List<InstalledAppInfo>>(emptyList())
-    private val _vocabSession = MutableStateFlow(VocabSessionState())
-    private val _aiMessages = MutableStateFlow(LabState().messages)
-    private val _isAiLoading = MutableStateFlow(false)
-    private val _inspectedActivities = MutableStateFlow<List<String>>(emptyList())
-    private val _secretTrigger = MutableStateFlow(SecretTriggerState())
-    private val _diagnostics = MutableStateFlow(SystemDiagnostics("检测中", false, false, false))
-    private val _isVaultUnlocked = MutableStateFlow(false)
-    private val _isSyncing = MutableStateFlow(false)
-    private val _statusBanner = MutableStateFlow<String?>(null)
-    private val _generatedSyncCode = MutableStateFlow<String?>(null)
+    private var cachedBookWords: List<VocabWordEntity> = emptyList()
+    private var cachedProgressMap: Map<String, VocabProgressEntity> = emptyMap()
+    private var lastSecretTapMs: Long = 0L
 
-    // Mail ephemeral UI state
-    private val _selectedMailId = MutableStateFlow<String?>(null)
-    private val _isMailLoading = MutableStateFlow(false)
-    private val _isMailAiProcessing = MutableStateFlow(false)
-    private val _mailAiSummary = MutableStateFlow("")
-    private val _pendingMailDraft = MutableStateFlow<MailDraftState?>(null)
-    private val _showMailAccountDialog = MutableStateFlow(false)
-
-    // PenOS 5.0 Guardrails, RAM Governance, 60s Bypass & Gesture Haptics
-    private val _pendingMcpChanges = MutableStateFlow<List<PendingMcpChange>>(emptyList())
-    private val _memoryHealth = MutableStateFlow(MemoryHealthState())
-    private val _stockHomeBypassSec = MutableStateFlow(0)
-    private val _gestureHapticNonce = MutableStateFlow(0)
-
-    private var allWordsCache: List<VocabWordWithProgress> = emptyList()
-    private var lastUserInteractionElapsedMs: Long = SystemClock.elapsedRealtime()
-    private var lastSecretTapElapsedMs: Long = 0L
-    private var hasCheckedInitialSetup: Boolean = false
-    private var lastKeepAliveEnabled: Boolean? = null
-    private var isSilentMailSyncRunning: Boolean = false
-
-    private val harnessExecutor = PenHarnessExecutor(
-        prefs = prefs,
-        database = app.database,
-        weatherRepo = weatherRepo,
-        whiteNoise = whiteNoise,
-        getIsoDate = { _clockTick.value.isoDate },
-        getInstalledApps = { _installedApps.value },
-        onSetWeatherSource = { _weatherSourceStatus.value = it },
-        onStartPomodoro = { openPomodoroFocus(autoStartMinutes = it) },
-        onSetBrightness = { setScreenBrightness(it) },
-        onSetVolume = { setMediaVolume(it) },
-        onLaunchApp = { launchApp(it) },
-        onPresentMailDraft = { to, subject, body ->
-            _pendingMailDraft.value = MailDraftState(to = to, subject = subject, body = body, isAiGenerated = true)
-            _activeOverlay.value = DesktopOverlay.NONE
-            _screenMode.value = PenScreenMode.MAIL
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+            val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val pct = if (level >= 0 && scale > 0) (level * 100) / scale else _uiState.value.batteryPercent
+            val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL
+            _uiState.update {
+                if (it.batteryPercent == pct && it.isCharging == charging) it
+                else it.copy(batteryPercent = pct, isCharging = charging)
+            }
         }
-    )
-
-    private data class CoreBundle(
-        val mode: PenScreenMode,
-        val overlay: DesktopOverlay,
-        val config: PenConfig,
-        val clock: ClockTelemetryState,
-        val poem: CachedPoemEntity
-    )
-
-    private data class ProductivityBundle(
-        val weather: CachedWeatherEntity,
-        val isWeatherLoading: Boolean,
-        val weatherSource: String,
-        val cities: List<WeatherCityOption>,
-        val todos: List<TodoItemEntity>,
-        val events: List<CalendarEventEntity>
-    )
-
-    private data class Ext40Bundle(
-        val customWidgets: List<CustomWidgetEntity>,
-        val drawerSlots: List<DrawerSlotEntity>,
-        val mail: MailUiState,
-        val lanServer: LanServerStatus
-    )
-
-    private data class FocusControlBundle(
-        val pomodoro: PomodoroState,
-        val deviceControl: DeviceControlState,
-        val isPoemLoading: Boolean,
-        val lab: LabState
-    )
-
-    private data class Pen50Bundle(
-        val snapshots: List<DesktopSnapshotEntity>,
-        val pendingMcp: List<PendingMcpChange>,
-        val memoryHealth: MemoryHealthState,
-        val bypassSec: Int,
-        val hapticNonce: Int
-    )
-
-    private data class AppMetaBundle(
-        val installedApps: List<InstalledAppInfo>,
-        val vocabSession: VocabSessionState,
-        val secretTrigger: SecretTriggerState,
-        val diagnostics: SystemDiagnostics,
-        val isVaultUnlocked: Boolean,
-        val isSyncing: Boolean,
-        val statusBanner: String?,
-        val syncCode: String?,
-        val pen50: Pen50Bundle
-    )
-
-    private data class MailMetaBundle(
-        val selectedId: String?,
-        val isLoading: Boolean,
-        val isAiBusy: Boolean,
-        val summary: String,
-        val draft: MailDraftState?
-    )
-
-    private data class AppSubBundle(
-        val apps: List<InstalledAppInfo>,
-        val vocab: VocabSessionState,
-        val secret: SecretTriggerState,
-        val diag: SystemDiagnostics
-    )
-
-    private data class MetaSubBundle(
-        val isVaultUnlocked: Boolean,
-        val isSyncing: Boolean,
-        val banner: String?,
-        val syncCode: String?
-    )
-
-    private val coreFlow = combine(
-        _screenMode,
-        _activeOverlay,
-        configState,
-        _slowTelemetry,
-        poetryRepo.latestPoemFlow
-    ) { mode, overlay, config, clock, poem ->
-        CoreBundle(mode, overlay, config, clock, poem ?: OfflineSeedData.defaultPoems.first())
-    }.distinctUntilChanged()
-
-    private val weatherSubFlow = combine(
-        weatherRepo.currentWeatherFlow,
-        _isWeatherLoading,
-        _weatherSourceStatus,
-        _citySearchResults
-    ) { weather, loading, source, cities ->
-        Triple(weather ?: WmoWeatherMapper.fallbackWeather, loading to source, cities)
-    }.distinctUntilChanged()
-
-    private val productivityFlow = combine(
-        weatherSubFlow,
-        todoDao.observeAllTodos(),
-        calendarEventDao.observeAllEvents()
-    ) { wTriple, todos, events ->
-        ProductivityBundle(
-            weather = wTriple.first,
-            isWeatherLoading = wTriple.second.first,
-            weatherSource = wTriple.second.second,
-            cities = wTriple.third,
-            todos = todos,
-            events = events
-        )
-    }.distinctUntilChanged()
-
-    private val mailMetaFlow = combine(
-        _selectedMailId,
-        _isMailLoading,
-        _isMailAiProcessing,
-        _mailAiSummary,
-        _pendingMailDraft
-    ) { selId, loading, aiBusy, summary, draft ->
-        MailMetaBundle(selId, loading, aiBusy, summary, draft)
-    }.distinctUntilChanged()
-
-    private val mailStateFlow = combine(
-        mailDao.observeAccounts(),
-        mailDao.observeRecentMessages(),
-        mailMetaFlow,
-        _showMailAccountDialog
-    ) { accounts, msgs, meta, showAcc ->
-        MailUiState(
-            accounts = accounts,
-            messages = msgs,
-            selectedMessageId = meta.selectedId ?: msgs.firstOrNull()?.id,
-            isLoading = meta.isLoading,
-            isAiProcessing = meta.isAiBusy,
-            aiSummary = meta.summary,
-            pendingDraft = meta.draft,
-            showAccountDialog = showAcc
-        )
-    }.distinctUntilChanged()
-
-    private val ext40Flow = combine(
-        customWidgetDao.observeAllCustomWidgets(),
-        drawerSlotDao.observeAllSlots(),
-        mailStateFlow,
-        lanAdminServer.status
-    ) { customWidgets, drawerSlots, mail, lan ->
-        Ext40Bundle(customWidgets, drawerSlots, mail, lan)
-    }.distinctUntilChanged()
-
-    private val labFlow = combine(
-        _aiMessages,
-        _isAiLoading,
-        whiteNoise.state,
-        AntiLockCoordinator.radarLog,
-        _inspectedActivities
-    ) { msgs, aiLoading, wn, radar, acts ->
-        LabState(msgs, aiLoading, wn, radar, acts)
-    }.distinctUntilChanged()
-
-    private val focusControlFlow = combine(
-        _pomodoro,
-        _deviceControl,
-        _isPoemLoading,
-        labFlow
-    ) { pomo, dev, poemLoad, lab ->
-        FocusControlBundle(pomo, dev, poemLoad, lab)
-    }.distinctUntilChanged()
-
-    private val appSubFlow = combine(
-        _installedApps,
-        _vocabSession,
-        _secretTrigger,
-        _diagnostics
-    ) { apps, vocab, secret, diag ->
-        AppSubBundle(apps, vocab, secret, diag)
-    }.distinctUntilChanged()
-
-    private val metaSubFlow = combine(
-        _isVaultUnlocked,
-        _isSyncing,
-        _statusBanner,
-        _generatedSyncCode
-    ) { unlocked, syncing, banner, code ->
-        MetaSubBundle(unlocked, syncing, banner, code)
-    }.distinctUntilChanged()
-
-    private val pen50Flow = combine(
-        snapshotDao.observeRecentSnapshots(),
-        _pendingMcpChanges,
-        _memoryHealth,
-        _stockHomeBypassSec,
-        _gestureHapticNonce
-    ) { snaps, pending, mem, bypassSec, haptic ->
-        Pen50Bundle(snaps, pending, mem, bypassSec, haptic)
-    }.distinctUntilChanged()
-
-    private val appMetaFlow = combine(appSubFlow, metaSubFlow, pen50Flow) { a, m, p50 ->
-        AppMetaBundle(
-            installedApps = a.apps,
-            vocabSession = a.vocab,
-            secretTrigger = a.secret,
-            diagnostics = a.diag,
-            isVaultUnlocked = m.isVaultUnlocked,
-            isSyncing = m.isSyncing,
-            statusBanner = m.banner,
-            syncCode = m.syncCode,
-            pen50 = p50
-        )
-    }.distinctUntilChanged()
-
-    val uiState: StateFlow<PenOsUiState> = combine(
-        coreFlow,
-        productivityFlow,
-        ext40Flow,
-        focusControlFlow,
-        appMetaFlow
-    ) { core, prod, ext, focus, appMeta ->
-        PenOsUiState(
-            mode = core.mode,
-            activeOverlay = core.overlay,
-            config = core.config,
-            clock = core.clock,
-            pomodoro = focus.pomodoro,
-            deviceControl = focus.deviceControl,
-            poem = core.poem,
-            isPoemLoading = focus.isPoemLoading,
-            weather = prod.weather,
-            isWeatherLoading = prod.isWeatherLoading,
-            weatherSourceStatus = prod.weatherSource,
-            citySearchResults = prod.cities,
-            todos = prod.todos,
-            calendarEvents = prod.events,
-            customWidgets = ext.customWidgets,
-            drawerSlots = ext.drawerSlots,
-            installedApps = appMeta.installedApps,
-            vocabSession = appMeta.vocabSession,
-            mail = ext.mail,
-            lanServer = ext.lanServer,
-            lab = focus.lab,
-            secretTrigger = appMeta.secretTrigger,
-            diagnostics = appMeta.diagnostics,
-            isVaultUnlocked = appMeta.isVaultUnlocked,
-            isSyncing = appMeta.isSyncing,
-            statusBannerMessage = appMeta.statusBanner,
-            generatedSyncCode = appMeta.syncCode,
-            recentSnapshots = appMeta.pen50.snapshots,
-            pendingMcpChanges = appMeta.pen50.pendingMcp,
-            memoryHealth = appMeta.pen50.memoryHealth,
-            stockHomeBypassRemainingSec = appMeta.pen50.bypassSec,
-            gestureHapticNonce = appMeta.pen50.hapticNonce
-        )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = PenOsUiState()
-    )
-
-    init {
-        initializeOfflineData()
-        loadInitialDeviceControl()
-        observePreferencesForSystemGuards()
-        observeVocabWords()
-        observeMemoryPressure()
-        wireLanServerCallbacks()
-        startLowPowerClockAndLoops()
-        refreshInstalledApps()
-        refreshSystemDiagnostics()
-        refreshPoem(force = false)
-        refreshWeather(force = false)
     }
 
-    private fun loadInitialDeviceControl() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _deviceControl.value = readDeviceControl()
-        }
+    init {
+        registerBatteryMonitor()
+        refreshConnectivityStatus()
+        startClockAndTimerLoops()
+        observePreferences()
+        observeVocabDatabase()
+        observeRadarLog()
+        seedVocabIfNeeded()
+        loadInstalledApps()
+        refreshSystemDiagnostics()
     }
 
     override fun onCleared() {
-        whiteNoise.stop()
-        lanAdminServer.stop()
+        runCatching { app.unregisterReceiver(batteryReceiver) }
         super.onCleared()
     }
 
-    private fun wireLanServerCallbacks() {
-        lanAdminServer.onRemoteAiPrompt = { prompt ->
-            val cfg = prefs.currentConfig()
-            val profile = cfg.activeAiProfile()
-            val userMsg = AiChatMessage("lan_${System.currentTimeMillis()}", "user", "[局域网] $prompt")
-            _aiMessages.update { (it + userMsg).takeLast(24) }
-            var snapCaptured = false
-            val result = aiMcpClient.sendChatWithMcp(
-                profile = profile,
-                history = _aiMessages.value,
-                userPrompt = prompt,
-                externalMcpUrl = cfg.externalMcpUrl,
-                desktopToolExecutor = { name, args ->
-                    if (!harnessExecutor.isReadOnlyTool(name) && !snapCaptured) {
-                        snapshotManager.captureSnapshot("局域网 AI 修改前：${prompt.take(18)}", "LAN")
-                        snapCaptured = true
-                    }
-                    harnessExecutor.execute(name, args)
-                }
-            )
-            result.fold(
-                onSuccess = { reply ->
-                    _aiMessages.update { (it + reply).takeLast(24) }
-                    reply.content to reply.toolActionsSummary
-                },
-                onFailure = { err ->
-                    "执行失败：${err.message}" to ""
-                }
-            )
-        }
-        lanAdminServer.onMailAccountAdded = {
-            syncAllMailAccounts()
+    private fun registerBatteryMonitor() {
+        runCatching {
+            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val sticky = app.registerReceiver(batteryReceiver, filter)
+            if (sticky != null) batteryReceiver.onReceive(app, sticky)
         }
     }
 
-    private fun observeMemoryPressure() {
+    private fun refreshConnectivityStatus() {
+        val connected = runCatching {
+            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val net = cm?.activeNetwork
+                val caps = cm?.getNetworkCapabilities(net)
+                caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            } else {
+                @Suppress("DEPRECATION")
+                cm?.activeNetworkInfo?.isConnected == true
+            }
+        }.getOrDefault(false)
+        _uiState.update { if (it.wifiConnected == connected) it else it.copy(wifiConnected = connected) }
+    }
+
+    private fun startClockAndTimerLoops() {
         viewModelScope.launch {
-            app.memoryPressureFlow.collect { nonce ->
-                if (nonce > 0) {
-                    enforceRamAutoDowngradeIfNeeded(availMb = _clockTick.value.availRamMb, forcedByTrim = true)
-                }
-            }
-        }
-    }
-
-    private suspend fun enforceRamAutoDowngradeIfNeeded(availMb: Int, forcedByTrim: Boolean) {
-        val cfg = configState.value
-        val prevMem = _memoryHealth.value
-        if (abs(availMb - prevMem.availRamMb) >= 24) {
-            _memoryHealth.update { it.copy(availRamMb = availMb) }
-        }
-        val isHeavyWallpaper = cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_MP4 ||
-            cfg.dynamicWallpaperMode == PenConfig.DYN_WALLPAPER_GIF
-        if ((forcedByTrim || availMb in 1..109) && isHeavyWallpaper) {
-            BitmapDecodeCache.clear()
-            PenFontCatalog.clearExternalCache()
-            val prevMode = cfg.dynamicWallpaperMode
-            val prevMedia = cfg.dynamicWallpaperMediaPath
-            prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
-            _memoryHealth.value = MemoryHealthState(
-                isDegraded = true,
-                previousWallpaperMode = prevMode,
-                previousMediaPath = prevMedia,
-                availRamMb = availMb
-            )
-            showToast("内存偏紧(${availMb}MB)，已自动降级动态壁纸以保障桌面流畅")
-        }
-    }
-
-    fun restoreDegradedWallpaper() {
-        onUserInteraction()
-        val mem = _memoryHealth.value
-        if (!mem.isDegraded || mem.previousWallpaperMode.isBlank()) return
-        viewModelScope.launch {
-            prefs.setDynamicWallpaperConfig(
-                mode = mem.previousWallpaperMode,
-                mediaPath = mem.previousMediaPath.takeIf { it.isNotBlank() }
-            )
-            _memoryHealth.value = mem.copy(isDegraded = false)
-            showToast("已恢复先前的动态壁纸")
-        }
-    }
-
-    private fun initializeOfflineData() {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (vocabDao.getWordCount() < 150) {
-                vocabDao.insertWords(OfflineSeedData.defaultWords)
-                vocabDao.insertWords(VocabCatalogExpanded.allExpandedWords)
-            }
-            poetryRepo.ensureSeeded()
-            weatherRepo.ensureSeeded()
-            val todayIso = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-            if (todoDao.getTodoCount() == 0) {
-                todoDao.insertTodos(
-                    listOf(
-                        TodoItemEntity(title = "今日背诵 20 个核心英语单词", dueDateIso = todayIso, priority = 2),
-                        TodoItemEntity(title = "用学王扫学复习错题本生词", dueDateIso = todayIso, priority = 1),
-                        TodoItemEntity(title = "晚间听读一篇短文并打卡", dueDateIso = todayIso, priority = 0)
-                    )
-                )
-            }
-            if (calendarEventDao.getEventCount() == 0) {
-                calendarEventDao.insertEvent(
-                    CalendarEventEntity(dateIso = todayIso, timeHHmm = "07:30", title = "晨间背诵英语核心词")
-                )
-                calendarEventDao.insertEvent(
-                    CalendarEventEntity(dateIso = todayIso, timeHHmm = "19:30", title = "晚自习番茄专注 25 分钟")
-                )
-            }
-            if (customWidgetDao.getCount() == 0) {
-                val sampleBlocks = JSONArray().apply {
-                    put(JSONObject().put("type", "header").put("title", "学习冲刺看板").put("badge", "MCP 可改"))
-                    put(JSONObject().put("type", "countdown").put("label", "期末目标倒计时").put("target_iso", "2027-06-07"))
-                    put(
-                        JSONObject().put("type", "checklist").put(
-                            "items",
-                            JSONArray().apply {
-                                put(JSONObject().put("text", "英语核心 20 词").put("done", false))
-                                put(JSONObject().put("text", "25 分钟无干扰专注").put("done", false))
-                            }
-                        )
-                    )
-                    put(JSONObject().put("type", "action_button").put("label", "一键开启专注").put("action", "pomodoro").put("target", "25"))
-                }
-                customWidgetDao.upsert(
-                    CustomWidgetEntity(
-                        id = "sample_sprint_board",
-                        title = "学习冲刺看板",
-                        placement = CustomWidgetEntity.PLACEMENT_BOTH,
-                        widthDp = 204,
-                        accentHex = 0xFF38BDF8,
-                        dslJson = sampleBlocks.toString()
-                    )
-                )
-            }
-            if (drawerSlotDao.getCount() == 0) {
-                drawerSlotDao.insertAll(
-                    listOf(
-                        DrawerSlotEntity(id = "slot_clock", type = DrawerSlotEntity.TYPE_BUILTIN_CLOCK, refId = "multi_clock", title = "多样式时钟", sortOrder = 0),
-                        DrawerSlotEntity(id = "slot_cw_sample_sprint_board", type = DrawerSlotEntity.TYPE_CUSTOM_WIDGET, refId = "sample_sprint_board", title = "学习冲刺看板", sortOrder = 1),
-                        DrawerSlotEntity(id = "slot_ai_switch", type = DrawerSlotEntity.TYPE_AI_SWITCHER, refId = "ai_profiles", title = "AI 模型快切", sortOrder = 2),
-                        DrawerSlotEntity(id = "slot_mail", type = DrawerSlotEntity.TYPE_BUILTIN_MAIL, refId = "mail_inbox", title = "笔端邮箱", sortOrder = 3),
-                        DrawerSlotEntity(id = "slot_act_lan", type = DrawerSlotEntity.TYPE_ACTION_TILE, refId = "lan_admin", title = "局域网管理", sortOrder = 4)
-                    )
-                )
-            }
-        }
-    }
-
-    private fun observePreferencesForSystemGuards() {
-        viewModelScope.launch {
-            configState.collect { cfg ->
-                if (!hasCheckedInitialSetup) {
-                    hasCheckedInitialSetup = true
-                    if (!cfg.setupAssistantCompleted) {
-                        _screenMode.value = PenScreenMode.SETUP
-                    }
-                }
-                AntiLockCoordinator.updateRules(
-                    blockedPkg = cfg.blockedStockLauncherPackage,
-                    blockedActivities = cfg.blockedHomeActivities,
-                    scanPkg = cfg.scanAppPackage,
-                    scanActivityClass = cfg.scanActivityClass
-                )
-                // Edge-triggered KeepAlive IPC: only invoke start/stop when setting actually changes!
-                if (lastKeepAliveEnabled != cfg.keepAliveEnabled) {
-                    lastKeepAliveEnabled = cfg.keepAliveEnabled
-                    if (cfg.keepAliveEnabled) {
-                        PenKeepAliveService.start(app)
-                    } else {
-                        PenKeepAliveService.stop(app)
-                    }
-                }
-                if (_vocabSession.value.activeBook != cfg.activeVocabBook) {
-                    _vocabSession.update { it.copy(activeBook = cfg.activeVocabBook) }
-                    rebuildVocabQuestion(forceNextWord = true)
-                }
-                if (!_pomodoro.value.isRunning && !_pomodoro.value.isBreakMode) {
-                    val targetSec = cfg.pomodoroMinutes * 60
-                    if (_pomodoro.value.totalSeconds != targetSec && _pomodoro.value.remainingSeconds == _pomodoro.value.totalSeconds) {
-                        _pomodoro.update { it.copy(totalSeconds = targetSec, remainingSeconds = targetSec) }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun observeVocabWords() {
-        viewModelScope.launch {
-            vocabDao.observeAllWordsWithProgress().collect { list ->
-                allWordsCache = list
-                rebuildVocabQuestion(forceNextWord = _vocabSession.value.currentWord == null)
-            }
-        }
-    }
-
-    private fun startLowPowerClockAndLoops() {
-        viewModelScope.launch(Dispatchers.Default) {
-            // Reusable thread-confined formatters: ZERO per-second SimpleDateFormat allocations & ZERO Main-Thread Binder IPC!
-            val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-            val secFmt = SimpleDateFormat("ss", Locale.getDefault())
-            val dateFmt = SimpleDateFormat("M月d日 E", Locale.CHINA)
-            val isoFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-
-            var tickCount = 0
+            var tickCounter = 0
             while (isActive) {
-                val nowElapsed = SystemClock.elapsedRealtime()
-                val includeHeavy = (tickCount % 15 == 0)
-                val nextClock = if (includeHeavy) {
-                    withContext(Dispatchers.IO) {
-                        readTelemetry(
-                            previous = _clockTick.value,
-                            includeHeavyStats = true,
-                            timeFmt = timeFmt,
-                            secFmt = secFmt,
-                            dateFmt = dateFmt,
-                            isoFmt = isoFmt
-                        )
-                    }
-                } else {
-                    readTelemetry(
-                        previous = _clockTick.value,
-                        includeHeavyStats = false,
-                        timeFmt = timeFmt,
-                        secFmt = secFmt,
-                        dateFmt = dateFmt,
-                        isoFmt = isoFmt
-                    )
-                }
-                _clockTick.value = nextClock
+                _clockFlow.value = buildClockSnapshot()
 
-                // Only propagate to monolithic uiState on meaningful UI changes (NOT raw 1MB RAM jitter!)
-                val prevSlow = _slowTelemetry.value
-                val slowChanged = nextClock.timeHHmm != prevSlow.timeHHmm ||
-                    nextClock.isoDate != prevSlow.isoDate ||
-                    nextClock.batteryPercent != prevSlow.batteryPercent ||
-                    nextClock.isCharging != prevSlow.isCharging ||
-                    nextClock.isWifiConnected != prevSlow.isWifiConnected
-                if (slowChanged) {
-                    _slowTelemetry.value = nextClock.copy(
-                        secondsStr = "00",
-                        availRamMb = prevSlow.availRamMb.takeIf { it > 0 } ?: nextClock.availRamMb
-                    )
-                }
-                tickCount++
-
-                val cfg = configState.value
-
-                // Pomodoro countdown tick (only mutates _pomodoro while running)
-                val pomo = _pomodoro.value
+                // Tick Pomodoro only when running
+                val pomo = _pomodoroFlow.value
                 if (pomo.isRunning) {
                     if (pomo.remainingSeconds > 1) {
-                        _pomodoro.value = pomo.copy(remainingSeconds = pomo.remainingSeconds - 1)
+                        _pomodoroFlow.value = pomo.copy(remainingSeconds = pomo.remainingSeconds - 1)
                     } else {
-                        val wasBreak = pomo.isBreakMode
-                        val nextTotal = if (wasBreak) cfg.pomodoroMinutes * 60 else 5 * 60
-                        _pomodoro.value = pomo.copy(
+                        val nextBreak = !pomo.isBreak
+                        val nextTotal = if (nextBreak) 5 * 60 else _uiState.value.config.pomodoroMinutes * 60
+                        _pomodoroFlow.value = pomo.copy(
                             isRunning = false,
-                            isBreakMode = !wasBreak,
+                            isBreak = nextBreak,
                             totalSeconds = nextTotal,
                             remainingSeconds = nextTotal,
-                            completedSessions = if (!wasBreak) pomo.completedSessions + 1 else pomo.completedSessions
+                            completedSessions = if (!pomo.isBreak) pomo.completedSessions + 1 else pomo.completedSessions
                         )
-                        if (!wasBreak) {
-                            whiteNoise.stop()
-                            showToast("专注番茄已完成！建议休息 5 分钟")
-                        } else {
-                            showToast("休息结束，准备好开启下一个番茄了吗？")
-                        }
+                        showToast(if (nextBreak) "专注完成，休息 5 分钟" else "休息结束，准备下一轮专注")
+                        triggerHaptic()
                     }
                 }
 
-                val secret = _secretTrigger.value
-                if ((secret.tapCount > 0 || secret.isArmed) && nowElapsed - lastSecretTapElapsedMs > 4500L) {
-                    _secretTrigger.value = SecretTriggerState()
+                // Update 60s Jiuxuewang stock-home bypass countdown only if active
+                val bypassRem = AntiLockCoordinator.remainingStockHomeBypassSec()
+                if (_uiState.value.stockHomeBypassSec != bypassRem) {
+                    _uiState.update { it.copy(stockHomeBypassSec = bypassRem) }
                 }
 
-                // PenOS 5.0: Update 60s stock home bypass countdown
-                val bypassSec = AntiLockCoordinator.remainingStockHomeBypassSec()
-                if (_stockHomeBypassSec.value != bypassSec) {
-                    _stockHomeBypassSec.value = bypassSec
+                // Refresh Wi-Fi status quietly every 15 seconds
+                tickCounter++
+                if (tickCounter % 15 == 0) {
+                    refreshConnectivityStatus()
                 }
 
-                // PenOS 5.0: 1GB RAM watchdog & 15-min silent Wi-Fi mail sync on heavy telemetry ticks
-                if (includeHeavy) {
-                    enforceRamAutoDowngradeIfNeeded(availMb = nextClock.availRamMb, forcedByTrim = false)
-                    maybeRunSilentWifiMailSync(cfg = cfg, isWifi = nextClock.isWifiConnected)
-                }
-
-                if (_screenMode.value == PenScreenMode.DESKTOP &&
-                    _activeOverlay.value == DesktopOverlay.NONE &&
-                    cfg.standByTimeoutSec > 0
-                ) {
-                    val idleSec = (nowElapsed - lastUserInteractionElapsedMs) / 1000L
-                    if (idleSec >= cfg.standByTimeoutSec) {
-                        _screenMode.value = PenScreenMode.STANDBY
-                    }
-                }
-
-                delay(1000L)
+                val nowMs = System.currentTimeMillis()
+                val delayMs = (1000L - (nowMs % 1000L)).coerceIn(200L, 1000L)
+                delay(delayMs)
             }
         }
     }
 
-    private fun maybeRunSilentWifiMailSync(cfg: PenConfig, isWifi: Boolean) {
-        if (!cfg.mailAutoSyncEnabled || !isWifi || _memoryHealth.value.isDegraded) return
-        if (_screenMode.value == PenScreenMode.STANDBY || _isMailLoading.value || isSilentMailSyncRunning) return
-        val now = System.currentTimeMillis()
-        if (now - cfg.lastMailAutoSyncAt < 15L * 60L * 1000L) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val accounts = mailDao.getAccountsSnapshot()
-            if (accounts.isEmpty()) return@launch
-            isSilentMailSyncRunning = true
-            try {
-                val unreadBefore = mailDao.getRecentMessagesSnapshot(60).count { it.isUnread }
-                var anySuccess = false
-                accounts.forEach { acc ->
-                    mailClient.fetchRecentInbox(acc, maxCount = 15).onSuccess { list ->
-                        mailDao.upsertMessages(list)
-                        mailDao.updateAccountSyncedAt(acc.id, System.currentTimeMillis())
-                        anySuccess = true
-                    }
-                }
-                if (anySuccess) {
-                    prefs.setLastMailAutoSyncAt(System.currentTimeMillis())
-                    val unreadAfter = mailDao.getRecentMessagesSnapshot(60).count { it.isUnread }
-                    if (unreadAfter > unreadBefore) {
-                        showToast("收到 ${unreadAfter - unreadBefore} 封新邮件")
-                    }
-                }
-            } finally {
-                isSilentMailSyncRunning = false
-            }
-        }
-    }
-
-    // --- PenOS 5.0 Stock Home 60s Bypass, Gesture Tuning, Mail Auto-Sync & Config Backup ---
-    fun toggleStockHomeBypass60s() {
-        onUserInteraction()
-        if (AntiLockCoordinator.isStockHomeBypassActive()) {
-            AntiLockCoordinator.revokeStockHomeBypass()
-            _stockHomeBypassSec.value = 0
-            showToast("已恢复久学网原厂桌面拦截防锁回")
-        } else {
-            AntiLockCoordinator.grantStockHomeBypass(60_000L)
-            _stockHomeBypassSec.value = 60
-            showToast("已临时放行原厂桌面 60 秒（倒计时结束自动恢复拦截）")
-        }
-    }
-
-    fun setSwipeSensitivityDp(dp: Float) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setSwipeSensitivityDp(dp) }
-    }
-
-    fun setGestureHapticsEnabled(enabled: Boolean) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setGestureHapticsEnabled(enabled) }
-    }
-
-    fun triggerGestureHaptic() {
-        if (uiState.value.config.gestureHapticsEnabled) {
-            _gestureHapticNonce.value += 1
-        }
-    }
-
-    fun setMailAutoSyncEnabled(enabled: Boolean) {
-        onUserInteraction()
+    private fun observePreferences() {
         viewModelScope.launch {
-            prefs.setMailAutoSyncEnabled(enabled)
-            showToast(if (enabled) "已开启连 Wi-Fi 每 15 分钟静默收信" else "已关闭后台自动收信")
-        }
-    }
-
-    suspend fun exportFullConfigJson(includeSecrets: Boolean = false): String =
-        snapshotManager.exportFullConfigJson(includeSecrets = includeSecrets)
-
-    fun importFullConfigJson(json: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            snapshotManager.importFullConfigJson(json)
-                .onSuccess { showToast(it) }
-                .onFailure { showToast("导入配置失败：${it.message}") }
-        }
-    }
-
-    fun syncFullConfigWithWebDav(uploadOnly: Boolean = false) {
-        onUserInteraction()
-        if (_isSyncing.value) return
-        viewModelScope.launch {
-            _isSyncing.value = true
-            val res = snapshotManager.syncFullConfigWithWebDav(uploadOnly = uploadOnly)
-            _isSyncing.value = false
-            res.onSuccess { showToast(it) }
-                .onFailure { showToast("WebDAV 配置同步失败：${it.message}") }
-        }
-    }
-
-    fun onUserInteraction() {
-        lastUserInteractionElapsedMs = SystemClock.elapsedRealtime()
-    }
-
-    fun switchMode(mode: PenScreenMode) {
-        onUserInteraction()
-        _activeOverlay.value = DesktopOverlay.NONE
-        if (mode != PenScreenMode.VAULT) {
-            _isVaultUnlocked.value = false
-        }
-        _screenMode.value = mode
-        if (mode == PenScreenMode.VAULT) {
-            refreshInstalledApps()
-            refreshSystemDiagnostics()
-        }
-    }
-
-    fun openOverlay(overlay: DesktopOverlay) {
-        onUserInteraction()
-        if (overlay == DesktopOverlay.CONTROL_CENTER) {
-            _deviceControl.value = readDeviceControl()
-        }
-        if (overlay == DesktopOverlay.ALL_APPS && _installedApps.value.isEmpty()) {
-            refreshInstalledApps()
-        }
-        _activeOverlay.value = overlay
-    }
-
-    fun closeOverlay() {
-        onUserInteraction()
-        _activeOverlay.value = DesktopOverlay.NONE
-    }
-
-    fun wakeFromStandBy() {
-        onUserInteraction()
-        _screenMode.value = PenScreenMode.DESKTOP
-    }
-
-    // --- Setup Assistant ---
-    fun completeSetupAssistant() {
-        onUserInteraction()
-        hasCheckedInitialSetup = true
-        _screenMode.value = PenScreenMode.DESKTOP
-        showToast("欢迎使用 PenOS 5.0，已准备就绪")
-        viewModelScope.launch {
-            prefs.setSetupAssistantCompleted(true)
-        }
-    }
-
-    fun reopenSetupAssistant() {
-        onUserInteraction()
-        _activeOverlay.value = DesktopOverlay.NONE
-        _screenMode.value = PenScreenMode.SETUP
-    }
-
-    // --- Motion Tier, 4-Mode Dynamic Wallpaper, 5-Slot Global Typography & 6-Style Clock ---
-    fun setMotionTier(tierId: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setMotionTier(tierId)
-            val label = when (tierId) {
-                PenMotionTier.FAST.id -> "极速流畅（60fps 推荐）"
-                PenMotionTier.SPRING.id -> "轻盈弹簧"
-                else -> "零动效省电"
-            }
-            showToast("已切换动效档位：$label")
-        }
-    }
-
-    fun setDesktopEngineMode(mode: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setDesktopEngineMode(mode)
-            val label = if (mode == PenConfig.ENGINE_COMPOSE_FULL) {
-                "完整 Compose 桌面（已深度优化）"
-            } else {
-                "原生 View 极速桌面（MT6582 推荐）"
-            }
-            showToast("主屏引擎已切换：$label")
-        }
-    }
-
-    fun toggleDesktopEngineMode() {
-        val current = uiState.value.config.desktopEngineMode
-        val next = if (current == PenConfig.ENGINE_NATIVE_TURBO) {
-            PenConfig.ENGINE_COMPOSE_FULL
-        } else {
-            PenConfig.ENGINE_NATIVE_TURBO
-        }
-        setDesktopEngineMode(next)
-    }
-
-    fun setZeroOverdrawMode(enabled: Boolean) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setZeroOverdrawMode(enabled)
-            showToast(if (enabled) "已开启零过绘制纯色极速视觉" else "已切回半透明轻质感视觉")
-        }
-    }
-
-    fun setDynamicWallpaperMode(mode: String, proceduralStyle: String? = null, mediaPath: String? = null) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setDynamicWallpaperConfig(mode = mode, proceduralStyle = proceduralStyle, mediaPath = mediaPath)
-            val label = when (mode) {
-                PenConfig.DYN_WALLPAPER_PROCEDURAL -> "代码极光动效"
-                PenConfig.DYN_WALLPAPER_GIF -> "本地 GIF 动态壁纸"
-                PenConfig.DYN_WALLPAPER_MP4 -> "本地 MP4 视频壁纸"
-                PenConfig.DYN_WALLPAPER_LIVE -> "安卓系统动态壁纸透传"
-                else -> "静态高清壁纸"
-            }
-            showToast("动态壁纸已切换：$label")
-        }
-    }
-
-    fun importDynamicMediaFromUri(uri: Uri, extension: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importDynamicMediaFromUri(app, uri, extension)
-                .onSuccess { path ->
-                    val mode = if (extension.equals("mp4", true)) PenConfig.DYN_WALLPAPER_MP4 else PenConfig.DYN_WALLPAPER_GIF
-                    prefs.setDynamicWallpaperConfig(mode = mode, mediaPath = path)
-                    showToast("已应用本地 ${extension.uppercase()} 动态壁纸")
-                }
-                .onFailure { showToast("导入动态壁纸失败：${it.message}") }
-        }
-    }
-
-    fun importDynamicMediaFromPath(rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importDynamicMediaFromPath(app, rawPath)
-                .onSuccess { (ext, path) ->
-                    val mode = if (ext == "mp4") PenConfig.DYN_WALLPAPER_MP4 else PenConfig.DYN_WALLPAPER_GIF
-                    prefs.setDynamicWallpaperConfig(mode = mode, mediaPath = path)
-                    showToast("已加载 ${ext.uppercase()} 动态壁纸")
-                }
-                .onFailure { showToast("读取失败：${it.message}") }
-        }
-    }
-
-    fun setMultiClockConfig(style: String? = null, shape: String? = null, showSeconds: Boolean? = null) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setMultiClockConfig(style = style, shape = shape, showSeconds = showSeconds)
-        }
-    }
-
-    fun cycleMultiClockStyle() {
-        onUserInteraction()
-        val styles = MultiClockConfig.allStyles.map { it.first }
-        val cur = uiState.value.config.multiClock.style
-        val next = styles[(styles.indexOf(cur).coerceAtLeast(0) + 1) % styles.size]
-        setMultiClockConfig(style = next)
-    }
-
-    fun updateFontSlot(slotName: String, spec: FontSlotSpec) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.updateFontSlot(slotName, spec) }
-    }
-
-    fun importFontForSlotFromUri(slotName: String, uri: Uri) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importFontFromUri(app, uri)
-                .onSuccess { path ->
-                    val cur = prefs.currentConfig().typographyProfile.slotByName(slotName)
-                    prefs.updateFontSlot(slotName, cur.copy(familyKey = "external", externalPath = path))
-                    showToast("已应用外部字体到 $slotName 通道")
-                }
-                .onFailure { showToast("字体导入失败：${it.message}") }
-        }
-    }
-
-    fun importFontForSlotFromPath(slotName: String, rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.importFontFromPath(app, rawPath)
-                .onSuccess { path ->
-                    val cur = prefs.currentConfig().typographyProfile.slotByName(slotName)
-                    prefs.updateFontSlot(slotName, cur.copy(familyKey = "external", externalPath = path))
-                    showToast("已从路径加载字体到 $slotName 通道")
-                }
-                .onFailure { showToast("字体路径无效：${it.message}") }
-        }
-    }
-
-    fun resetTypographyProfile() {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.resetTypographyProfile()
-            showToast("5 通道全局字体已重置默认")
-        }
-    }
-
-    // --- Custom DSL Widgets & Apple TV Drawer ---
-    fun toggleCustomWidgetChecklist(widget: CustomWidgetEntity, blockIndex: Int, itemIndex: Int) {
-        onUserInteraction()
-        val updatedJson = CustomWidgetDslParser.toggleChecklistItem(widget.dslJson, blockIndex, itemIndex)
-        mutateCustomWidgetDsl(widget, updatedJson)
-    }
-
-    fun mutateCustomWidgetDsl(widget: CustomWidgetEntity, updatedDslJson: String) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) {
-            customWidgetDao.upsert(widget.copy(dslJson = updatedDslJson, updatedAt = System.currentTimeMillis()))
-        }
-    }
-
-    fun refreshCustomHttpBlock(widget: CustomWidgetEntity, blockIndex: Int, url: String, jsonPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val res = CustomWidgetDslParser.fetchHttpJsonValue(url, jsonPath)
-            val nowLabel = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-            res.onSuccess { value ->
-                val updated = CustomWidgetDslParser.updateHttpJsonCache(widget.dslJson, blockIndex, value, nowLabel)
-                customWidgetDao.upsert(widget.copy(dslJson = updated, updatedAt = System.currentTimeMillis()))
-                showToast("JSON 指标已刷新：$value")
-            }.onFailure { err ->
-                showToast("JSON 拉取失败：${err.message}")
-            }
-        }
-    }
-
-    fun runWidgetMacro(steps: List<String>) {
-        onUserInteraction()
-        if (steps.isEmpty()) return
-        viewModelScope.launch {
-            steps.take(6).forEach { rawStep ->
-                val parts = rawStep.trim().split(":", limit = 2)
-                val cmd = parts[0].lowercase()
-                val arg = parts.getOrElse(1) { "" }.trim()
-                when (cmd) {
-                    "night_eye_on" -> prefs.setNightDimAlpha(0.35f)
-                    "night_eye_off" -> prefs.setNightDimAlpha(0f)
-                    "white_noise" -> {
-                        if (arg.equals("stop", true)) {
-                            whiteNoise.stop()
-                        } else {
-                            val t = WhiteNoiseType.entries.firstOrNull { it.id.equals(arg, true) } ?: WhiteNoiseType.RAIN
-                            whiteNoise.start(t)
-                        }
-                    }
-                    "pomodoro" -> openPomodoroFocus(autoStartMinutes = arg.toIntOrNull() ?: 25)
-                    "brightness" -> arg.toIntOrNull()?.let { setScreenBrightness(it / 100f) }
-                    "volume" -> arg.toIntOrNull()?.let { setMediaVolume(it / 100f) }
-                    "theme_light" -> prefs.setDesignStyle(PenConfig.STYLE_APPLE_LIGHT)
-                    "theme_dark" -> prefs.setDesignStyle(PenConfig.STYLE_DARK_STANDBY)
-                    else -> dispatchCustomWidgetAction(cmd, arg)
-                }
-            }
-            showToast("宏工作流已执行（${steps.size} 步）")
-        }
-    }
-
-    fun installWidgetTemplate(templateId: String) {
-        onUserInteraction()
-        val tpl = CustomWidgetTemplates.findById(templateId) ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            snapshotManager.captureSnapshot("安装模板「${tpl.title}」前", "MANUAL")
-            customWidgetDao.upsert(tpl.toEntity())
-            val existingSlots = drawerSlotDao.getAllSnapshot()
-            if (existingSlots.none { it.type == DrawerSlotEntity.TYPE_CUSTOM_WIDGET && it.refId == tpl.id }) {
-                drawerSlotDao.upsert(
-                    DrawerSlotEntity(
-                        id = "slot_cw_${tpl.id}",
-                        type = DrawerSlotEntity.TYPE_CUSTOM_WIDGET,
-                        refId = tpl.id,
-                        title = tpl.title,
-                        sortOrder = existingSlots.size
-                    )
+            prefs.configFlow.collect { cfg ->
+                AntiLockCoordinator.updateRules(
+                    blockedPkg = cfg.blockedHomePackage,
+                    blockedActivities = cfg.blockedHomeActivities,
+                    scanPkg = cfg.scanAppPackage,
+                    scanActivityClass = cfg.scanAppActivity
                 )
-            }
-            showToast("已一键安装模板「${tpl.title}」到主屏和抽屉")
-        }
-    }
-
-    fun dispatchCustomWidgetAction(action: String, target: String) {
-        onUserInteraction()
-        when (action.lowercase()) {
-            "pomodoro" -> openPomodoroFocus(autoStartMinutes = target.toIntOrNull() ?: 25)
-            "mail" -> switchMode(PenScreenMode.MAIL)
-            "lab" -> switchMode(PenScreenMode.LAB)
-            "vocab" -> switchMode(PenScreenMode.VOCAB)
-            "drawer" -> switchMode(PenScreenMode.APPLE_TV_DRAWER)
-            "theme_toggle" -> toggleQuickDesignStyle()
-            "lan_admin" -> {
-                if (!lanAdminServer.status.value.isRunning) toggleLanAdminServer()
-                switchMode(PenScreenMode.LAB)
-            }
-            "white_noise" -> {
-                if (target.equals("stop", true)) {
-                    stopWhiteNoise()
+                if (cfg.keepAliveEnabled) {
+                    PenKeepAliveService.start(app)
                 } else {
-                    val t = WhiteNoiseType.entries.firstOrNull { it.id.equals(target, true) } ?: WhiteNoiseType.RAIN
-                    toggleWhiteNoise(t)
+                    PenKeepAliveService.stop(app)
+                }
+                _uiState.update { it.copy(config = cfg) }
+                val curPomo = _pomodoroFlow.value
+                if (!curPomo.isRunning && !curPomo.isBreak && curPomo.totalSeconds != cfg.pomodoroMinutes * 60) {
+                    val secs = cfg.pomodoroMinutes * 60
+                    _pomodoroFlow.value = curPomo.copy(totalSeconds = secs, remainingSeconds = secs)
                 }
             }
-            "launch_app" -> {
-                if (target.isNotBlank()) launchApp(target) else openOverlay(DesktopOverlay.ALL_APPS)
+        }
+    }
+
+    private fun observeRadarLog() {
+        viewModelScope.launch {
+            AntiLockCoordinator.radarLog.collect { log ->
+                _uiState.update { it.copy(radarLog = log) }
             }
-            else -> showToast("已执行组件动作：$action")
         }
     }
 
-    fun deleteCustomWidget(widgetId: String) {
-        onUserInteraction()
+    private fun seedVocabIfNeeded() {
         viewModelScope.launch(Dispatchers.IO) {
-            customWidgetDao.deleteById(widgetId)
-            drawerSlotDao.deleteById("slot_cw_$widgetId")
+            if (vocabDao.countWords() < 50) {
+                vocabDao.insertWords(OfflineSeedData.defaultWords + VocabCatalogExpanded.allExpandedWords)
+            }
         }
-        showToast("已移除自定义组件")
     }
 
-    fun addDrawerSlot(slotType: String, refId: String, title: String) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) {
-            val count = drawerSlotDao.getCount()
-            drawerSlotDao.upsert(
-                DrawerSlotEntity(
-                    id = "slot_${slotType.lowercase()}_${refId.ifBlank { System.currentTimeMillis().toString() }}",
-                    type = slotType,
-                    refId = refId,
-                    title = title,
-                    sortOrder = count
+    private fun observeVocabDatabase() {
+        val dayStartMs = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        viewModelScope.launch {
+            val activeBookFlow = prefs.configFlow.map { it.activeVocabBook }.distinctUntilChanged()
+            combine(
+                activeBookFlow,
+                activeBookFlow.flatMapLatest { bookId -> vocabDao.observeWordsByBook(bookId) },
+                vocabDao.observeAllProgress(),
+                vocabDao.observeReviewedSince(dayStartMs),
+                vocabDao.observeMasteredCount()
+            ) { bookId, words, progressList, todayReviewed, mastered ->
+                cachedBookWords = words
+                cachedProgressMap = progressList.associateBy { it.wordId }
+                val currentId = _uiState.value.vocab.currentWord?.id
+                val keepCurrent = words.firstOrNull { it.id == currentId }
+                val nextWord = keepCurrent ?: pickNextWord(words, cachedProgressMap, excludeId = null)
+                VocabStudyState(
+                    activeBookId = bookId,
+                    wordsInBook = words.size,
+                    todayReviewed = todayReviewed,
+                    masteredCount = mastered,
+                    currentWord = nextWord,
+                    showMeaning = if (keepCurrent != null) _uiState.value.vocab.showMeaning else false
                 )
-            )
-        }
-        showToast("已添加「$title」到 Apple TV 抽屉")
-    }
-
-    fun removeDrawerSlot(slotId: String) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) { drawerSlotDao.deleteById(slotId) }
-        showToast("已从抽屉移除")
-    }
-
-    // --- LAN Web Admin Console ---
-    fun toggleLanAdminServer() {
-        onUserInteraction()
-        if (lanAdminServer.status.value.isRunning) {
-            lanAdminServer.stop()
-            showToast("局域网网页控制台已关闭")
-        } else {
-            val port = uiState.value.config.lanAdminPort
-            lanAdminServer.start(port)
-            showToast("局域网网页控制台已启动（端口 $port）")
-        }
-    }
-
-    fun regenerateLanPin() {
-        onUserInteraction()
-        viewModelScope.launch {
-            val newPin = prefs.regenerateLanAdminPin()
-            if (lanAdminServer.status.value.isRunning) {
-                val port = uiState.value.config.lanAdminPort
-                lanAdminServer.stop()
-                lanAdminServer.start(port)
-            }
-            showToast("已刷新 6 位局域网配对码：$newPin")
-        }
-    }
-
-    // --- Multi-AI API Profiles ---
-    fun selectAiApiProfile(profileId: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setActiveAiProfile(profileId)
-            val name = uiState.value.config.aiProfiles.firstOrNull { it.id == profileId }?.name ?: profileId
-            showToast("当前 AI 模型已切换：$name")
-        }
-    }
-
-    fun upsertAiApiProfile(profile: AiApiProfile) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.upsertAiApiProfile(profile)
-            showToast("已保存 AI 模型预设「${profile.name}」")
-        }
-    }
-
-    fun deleteAiApiProfile(profileId: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.deleteAiApiProfile(profileId)
-            showToast("已删除 AI 模型预设")
-        }
-    }
-
-    // --- Built-In IMAP/SMTP Email Client + AI Summarize & Draft ---
-    fun setShowMailAccountDialog(show: Boolean) {
-        onUserInteraction()
-        _showMailAccountDialog.value = show
-    }
-
-    fun saveMailAccount(account: MailAccountEntity) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) {
-            mailDao.upsertAccount(account)
-            _showMailAccountDialog.value = false
-            showToast("已保存邮箱账号 ${account.emailAddress}，正在同步收件箱…")
-            syncMailAccountInternal(account)
-        }
-    }
-
-    fun deleteMailAccount(accountId: String) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) {
-            mailDao.deleteAccount(accountId)
-            mailDao.deleteMessagesForAccount(accountId)
-        }
-        showToast("已移除邮箱账号")
-    }
-
-    fun syncAllMailAccounts() {
-        onUserInteraction()
-        if (_isMailLoading.value) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val accounts = mailDao.getAccountsSnapshot()
-            if (accounts.isEmpty()) {
-                showToast("请先配置 IMAP 邮箱账号与授权码")
-                _showMailAccountDialog.value = true
-                return@launch
-            }
-            _isMailLoading.value = true
-            var totalFetched = 0
-            var lastError: String? = null
-            accounts.forEach { acc ->
-                val res = mailClient.fetchRecentInbox(acc, maxCount = 15)
-                res.onSuccess { list ->
-                    mailDao.upsertMessages(list)
-                    totalFetched += list.size
-                }.onFailure { err ->
-                    lastError = err.message
-                }
-            }
-            _isMailLoading.value = false
-            if (lastError != null && totalFetched == 0) {
-                showToast("收信失败：$lastError")
-            } else {
-                showToast("邮箱同步完成，共缓存 $totalFetched 封邮件")
+            }.collect { vocabState ->
+                _uiState.update { it.copy(vocab = vocabState) }
             }
         }
     }
 
-    private suspend fun syncMailAccountInternal(account: MailAccountEntity) {
-        _isMailLoading.value = true
-        mailClient.fetchRecentInbox(account, maxCount = 15)
-            .onSuccess { list ->
-                mailDao.upsertMessages(list)
-                showToast("已同步 ${list.size} 封最新邮件")
-            }
-            .onFailure { err ->
-                showToast("收信失败：${err.message}")
-            }
-        _isMailLoading.value = false
-    }
-
-    fun selectMailMessage(messageId: String) {
-        onUserInteraction()
-        _selectedMailId.value = messageId
-        viewModelScope.launch(Dispatchers.IO) {
-            mailDao.setUnread(messageId, false)
-        }
-    }
-
-    fun openMailCompose(to: String = "", subject: String = "", body: String = "", isAiGenerated: Boolean = false) {
-        onUserInteraction()
-        _pendingMailDraft.value = MailDraftState(to = to, subject = subject, body = body, isAiGenerated = isAiGenerated)
-    }
-
-    fun closeMailCompose() {
-        onUserInteraction()
-        _pendingMailDraft.value = null
-    }
-
-    fun sendMailDraft(to: String, subject: String, body: String) {
-        onUserInteraction()
-        val cleanTo = to.trim()
-        if (!cleanTo.contains("@")) {
-            showToast("请填写有效的收件人邮箱地址")
-            return
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            val account = mailDao.getAccountsSnapshot().firstOrNull { it.isDefault }
-                ?: mailDao.getAccountsSnapshot().firstOrNull()
-            if (account == null) {
-                showToast("请先绑定发信邮箱账号")
-                return@launch
-            }
-            _isMailLoading.value = true
-            val res = mailClient.sendEmail(account, cleanTo, subject.trim().ifBlank { "无主题" }, body)
-            _isMailLoading.value = false
-            res.onSuccess {
-                _pendingMailDraft.value = null
-                showToast("邮件已成功发送至 $cleanTo")
-            }.onFailure { err ->
-                showToast("发信失败：${err.message}")
+    private fun pickNextWord(
+        words: List<VocabWordEntity>,
+        progressMap: Map<String, VocabProgressEntity>,
+        excludeId: String?
+    ): VocabWordEntity? {
+        if (words.isEmpty()) return null
+        val candidates = words.filter { it.id != excludeId }.ifEmpty { words }
+        val now = System.currentTimeMillis()
+        // Priority: due/wrong words -> unmastered -> least recently reviewed
+        return candidates.minByOrNull { word ->
+            val p = progressMap[word.id]
+            when {
+                p == null -> 1_000_000L // unseen words first
+                p.masteryLevel >= 3 -> 9_000_000_000L + p.lastReviewedAt
+                p.nextReviewAt <= now -> p.nextReviewAt - p.wrongCount * 60_000L
+                else -> 5_000_000_000L + p.lastReviewedAt
             }
         }
     }
 
-    fun summarizeInboxWithAi() {
-        onUserInteraction()
-        if (_isMailAiProcessing.value) return
-        val messages = uiState.value.mail.messages.take(8)
-        if (messages.isEmpty()) {
-            showToast("当前收件箱为空，请先点击同步收信")
-            return
-        }
-        val profile = uiState.value.config.activeAiProfile()
-        val digestInput = messages.mapIndexed { idx, m ->
-            "${idx + 1}. [${if (m.isUnread) "未读" else "已读"}] 发件人:${m.fromAddress} | 主题:${m.subject} | 摘要:${m.snippet.take(100)}"
-        }.joinToString("\n")
+    // ==================== Navigation & Theme ====================
 
-        viewModelScope.launch {
-            _isMailAiProcessing.value = true
-            val res = aiMcpClient.sendQuickTextPrompt(
-                profile = profile,
-                systemPrompt = "你是精简高效的词典笔邮件助理。请用3~4条极简中文要点总结以下邮件，标注需要紧急回复的事项，控制在120字以内。",
-                userPrompt = digestInput
-            )
-            _isMailAiProcessing.value = false
-            res.onSuccess { summary ->
-                _mailAiSummary.value = summary
-            }.onFailure { err ->
-                showToast("AI 总结失败：${err.message}")
-            }
-        }
-    }
-
-    fun draftReplyWithAi(message: MailMessageEntity) {
-        onUserInteraction()
-        if (_isMailAiProcessing.value) return
-        val profile = uiState.value.config.activeAiProfile()
-        viewModelScope.launch {
-            _isMailAiProcessing.value = true
-            val res = aiMcpClient.sendQuickTextPrompt(
-                profile = profile,
-                systemPrompt = "你是得体的邮件回复助理。根据收到的邮件起草一封简洁礼貌的中文回复正文（直接输出正文内容，不含主题行）。",
-                userPrompt = "发件人：${message.fromAddress}\n主题：${message.subject}\n正文：\n${message.bodyText.take(600)}"
-            )
-            _isMailAiProcessing.value = false
-            res.onSuccess { draftBody ->
-                val replySubject = if (message.subject.startsWith("Re:", true)) message.subject else "Re: ${message.subject}"
-                val replyEmail = extractEmailAddress(message.fromAddress)
-                _pendingMailDraft.value = MailDraftState(
-                    to = replyEmail,
-                    subject = replySubject,
-                    body = draftBody,
-                    isAiGenerated = true
-                )
-            }.onFailure { err ->
-                showToast("AI 起草失败：${err.message}")
-            }
-        }
-    }
-
-    private fun extractEmailAddress(raw: String): String {
-        val match = Regex("<([^>]+@[^>]+)>").find(raw)
-        return match?.groupValues?.getOrNull(1)?.trim() ?: raw.trim()
-    }
-
-    // --- Pomodoro Focus Mode ---
-    fun openPomodoroFocus(autoStartMinutes: Int? = null) {
-        onUserInteraction()
-        if (autoStartMinutes != null) {
-            val mins = autoStartMinutes.coerceIn(1, 120)
-            viewModelScope.launch { prefs.setPomodoroMinutes(mins) }
-            _pomodoro.update {
-                it.copy(
-                    totalSeconds = mins * 60,
-                    remainingSeconds = mins * 60,
-                    isRunning = true,
-                    isBreakMode = false
-                )
-            }
-        }
-        _activeOverlay.value = DesktopOverlay.NONE
-        _screenMode.value = PenScreenMode.POMODORO
-    }
-
-    fun togglePomodoroRunning() {
-        onUserInteraction()
-        _pomodoro.update { it.copy(isRunning = !it.isRunning) }
-    }
-
-    fun resetPomodoro() {
-        onUserInteraction()
-        val mins = if (_pomodoro.value.isBreakMode) 5 else uiState.value.config.pomodoroMinutes
-        _pomodoro.update {
-            it.copy(totalSeconds = mins * 60, remainingSeconds = mins * 60, isRunning = false)
-        }
-    }
-
-    fun cyclePomodoroDuration() {
-        onUserInteraction()
-        val presets = listOf(15, 25, 45, 60)
-        val curMins = (_pomodoro.value.totalSeconds / 60).coerceAtLeast(1)
-        val nextMins = presets.firstOrNull { it > curMins } ?: presets.first()
-        viewModelScope.launch { prefs.setPomodoroMinutes(nextMins) }
-        _pomodoro.update {
+    fun navigateTo(screen: PenScreen) {
+        _uiState.update {
             it.copy(
-                totalSeconds = nextMins * 60,
-                remainingSeconds = nextMins * 60,
-                isRunning = false,
-                isBreakMode = false
+                screen = screen,
+                vaultUnlocked = if (screen == PenScreen.VAULT) it.vaultUnlocked else false
             )
         }
-    }
-
-    fun togglePomodoroBreakMode() {
-        onUserInteraction()
-        val nextBreak = !_pomodoro.value.isBreakMode
-        val mins = if (nextBreak) 5 else uiState.value.config.pomodoroMinutes
-        _pomodoro.update {
-            it.copy(
-                isBreakMode = nextBreak,
-                totalSeconds = mins * 60,
-                remainingSeconds = mins * 60,
-                isRunning = false
-            )
-        }
-    }
-
-    // --- Control Center (Brightness, Volume, Night Eye-Care, Low-Mem) ---
-    fun setScreenBrightness(fraction: Float) {
-        onUserInteraction()
-        val clamped = fraction.coerceIn(0.06f, 1f)
-        val wrote = SystemTakeoverHelper.writeSystemBrightness(app, clamped)
-        _deviceControl.update {
-            it.copy(brightnessFraction = clamped, canWriteSystemBrightness = wrote || SystemTakeoverHelper.canWriteSystemSettings(app))
-        }
-    }
-
-    fun setMediaVolume(fraction: Float) {
-        onUserInteraction()
-        val clamped = fraction.coerceIn(0f, 1f)
-        SystemTakeoverHelper.setMediaVolumeFraction(app, clamped)
-        _deviceControl.update { it.copy(mediaVolumeFraction = clamped) }
-    }
-
-    fun setNightDimAlpha(alpha: Float) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setNightDimAlpha(alpha) }
-    }
-
-    fun setLowMemMode(enabled: Boolean) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setLowMemMode(enabled)
-            showToast(if (enabled) "已开启 1GB 极简内存模式" else "已恢复标准动效模式")
-        }
-    }
-
-    // --- White Noise DSP ---
-    fun toggleWhiteNoise(type: WhiteNoiseType = whiteNoise.state.value.activeType) {
-        onUserInteraction()
-        whiteNoise.toggle(type)
-    }
-
-    fun stopWhiteNoise() {
-        onUserInteraction()
-        whiteNoise.stop()
-    }
-
-    fun setWhiteNoiseVolume(vol: Float) {
-        onUserInteraction()
-        whiteNoise.setVolume(vol)
-    }
-
-    // --- Dual Design Style, StandBy Swipe & Independent Wallpapers ---
-    fun setDesignStyle(style: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setDesignStyle(style)
-            showToast(if (style == PenConfig.STYLE_APPLE_LIGHT) "已切换：Apple 极简白画廊" else "已切换：StandBy 暗黑 CarPlay")
-        }
-    }
-
-    fun toggleQuickDesignStyle() {
-        val next = if (uiState.value.config.isAppleLightDesktop()) {
-            PenConfig.STYLE_DARK_STANDBY
-        } else {
-            PenConfig.STYLE_APPLE_LIGHT
-        }
-        setDesignStyle(next)
-    }
-
-    fun setStandByStyleMode(mode: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setStandByStyleMode(mode) }
-    }
-
-    fun cycleStandByRightWidget(delta: Int) {
-        onUserInteraction()
-        val order = PenConfig.STANDBY_WIDGET_ORDER
-        val curIdx = order.indexOf(uiState.value.config.standByRightWidget).coerceAtLeast(0)
-        val nextIdx = (curIdx + delta + order.size) % order.size
-        viewModelScope.launch { prefs.setStandByConfig(rightWidget = order[nextIdx]) }
-    }
-
-    fun selectWallpaperPreset(isLightTheme: Boolean, presetId: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setWallpaperForTheme(isLightTheme, presetId)
-            prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
-            showToast(if (isLightTheme) "已更新白画廊时钟壁纸" else "已更新暗黑时钟壁纸")
-        }
-    }
-
-    fun importCustomWallpaperFromUri(isLightTheme: Boolean, uri: Uri) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val tag = if (isLightTheme) "wall_light_${System.currentTimeMillis()}" else "wall_dark_${System.currentTimeMillis()}"
-            SafeMediaImporter.importImageFromUri(app, uri, tag, maxDimensionPx = 960)
-                .onSuccess { path ->
-                    prefs.setWallpaperForTheme(isLightTheme, PenConfig.WALLPAPER_CUSTOM, path)
-                    prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
-                    BitmapDecodeCache.clear()
-                    showToast(if (isLightTheme) "已应用白画廊自定义壁纸" else "已应用暗黑自定义壁纸")
-                }
-                .onFailure { showToast("导入壁纸失败：${it.message}") }
-        }
-    }
-
-    fun importCustomWallpaperFromPath(isLightTheme: Boolean, rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val tag = if (isLightTheme) "wall_light_${System.currentTimeMillis()}" else "wall_dark_${System.currentTimeMillis()}"
-            SafeMediaImporter.importImageFromFilePath(app, rawPath, tag, maxDimensionPx = 960)
-                .onSuccess { path ->
-                    prefs.setWallpaperForTheme(isLightTheme, PenConfig.WALLPAPER_CUSTOM, path)
-                    prefs.setDynamicWallpaperConfig(mode = PenConfig.DYN_WALLPAPER_STATIC)
-                    BitmapDecodeCache.clear()
-                    showToast("已从本地路径应用自定义壁纸")
-                }
-                .onFailure { showToast("读取失败：${it.message}") }
-        }
-    }
-
-    // --- Custom App Icons & External Poetry Font ---
-    fun importCustomAppIconFromUri(packageName: String, uri: Uri) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val safeKey = packageName.replace(".", "_")
-            SafeMediaImporter.importImageFromUri(app, uri, "icon_${safeKey}_${System.currentTimeMillis()}", maxDimensionPx = 192)
-                .onSuccess { path ->
-                    prefs.setCustomAppIcon(packageName, path)
-                    showToast("已替换应用自定义图标")
-                }
-                .onFailure { showToast("图标导入失败：${it.message}") }
-        }
-    }
-
-    fun importCustomAppIconFromPath(packageName: String, rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val safeKey = packageName.replace(".", "_")
-            SafeMediaImporter.importImageFromFilePath(app, rawPath, "icon_${safeKey}_${System.currentTimeMillis()}", maxDimensionPx = 192)
-                .onSuccess { path ->
-                    prefs.setCustomAppIcon(packageName, path)
-                    showToast("已替换应用自定义图标")
-                }
-                .onFailure { showToast("图标路径无效：${it.message}") }
-        }
-    }
-
-    fun setCustomAppIconColor(packageName: String, colorHex: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setCustomAppIcon(packageName, "color:$colorHex")
-            showToast("已设置纯色主题图标")
-        }
-    }
-
-    fun clearCustomAppIcon(packageName: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setCustomAppIcon(packageName, "")
-            showToast("已恢复系统默认图标")
-        }
-    }
-
-    fun importCustomPoetryFontFromUri(uri: Uri) = importFontForSlotFromUri("poetry", uri)
-
-    fun importCustomPoetryFontFromPath(rawPath: String) = importFontForSlotFromPath("poetry", rawPath)
-
-    fun clearCustomPoetryFont() {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setCustomPoetryFontPath("")
-            val cur = prefs.currentConfig().typographyProfile.poetry
-            prefs.updateFontSlot("poetry", cur.copy(familyKey = "noto_serif_sc", externalPath = ""))
-            showToast("已恢复内置思源宋体")
-        }
-    }
-
-    // --- Android Native System Widgets (1+2 Hybrid Mode) ---
-    fun setDesktopDeckMode(mode: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setDesktopDeckMode(mode) }
-    }
-
-    fun onNativeWidgetAdded(appWidgetId: Int) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.addNativeWidgetId(appWidgetId, widthDp = 200)
-            showToast("已添加安卓原生小组件")
-        }
-    }
-
-    fun removeNativeWidget(appWidgetId: Int) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.removeNativeWidgetId(appWidgetId)
-            nativeWidgetHost.deleteWidgetId(appWidgetId)
-            showToast("已移除原生小组件")
-        }
-    }
-
-    fun adjustNativeWidgetWidth(appWidgetId: Int, deltaDp: Int) {
-        onUserInteraction()
-        viewModelScope.launch {
-            val cur = uiState.value.config.nativeWidgetWidths[appWidgetId] ?: 200
-            prefs.setNativeWidgetWidth(appWidgetId, cur + deltaDp)
-        }
-    }
-
-    // --- Secret Vault Gesture (5 taps + Long-Press) ---
-    fun onClockTap() {
-        onUserInteraction()
-        val now = SystemClock.elapsedRealtime()
-        val current = _secretTrigger.value
-        val nextCount = if (now - lastSecretTapElapsedMs <= 1400L) current.tapCount + 1 else 1
-        lastSecretTapElapsedMs = now
-
-        if (nextCount >= 5) {
-            _secretTrigger.value = SecretTriggerState(
-                tapCount = 5,
-                isArmed = true,
-                hapticPulseNonce = current.hapticPulseNonce + 1
-            )
-            showToast("隐藏入口已就绪，请长按时间进入密室")
-        } else {
-            _secretTrigger.value = current.copy(tapCount = nextCount, isArmed = false)
-        }
-    }
-
-    fun onClockLongPress() {
-        onUserInteraction()
-        val current = _secretTrigger.value
-        val now = SystemClock.elapsedRealtime()
-        if (current.isArmed && now - lastSecretTapElapsedMs <= 4500L) {
-            _secretTrigger.value = SecretTriggerState(hapticPulseNonce = current.hapticPulseNonce + 1)
-            val hasPin = uiState.value.config.vaultPin.isNotBlank()
-            _isVaultUnlocked.value = !hasPin
-            _activeOverlay.value = DesktopOverlay.NONE
-            _screenMode.value = PenScreenMode.VAULT
-            refreshInstalledApps()
+        if (screen == PenScreen.VAULT) {
             refreshSystemDiagnostics()
         }
     }
 
-    fun verifyVaultPin(inputPin: String): Boolean {
-        val expected = uiState.value.config.vaultPin
-        val ok = expected.isBlank() || inputPin == expected
-        if (ok) _isVaultUnlocked.value = true else showToast("密码不正确")
+    fun toggleDarkTheme() {
+        val next = !_uiState.value.config.isDarkTheme
+        viewModelScope.launch { prefs.setDarkTheme(next) }
+        triggerHaptic()
+    }
+
+    fun setShowSecondsOnHome(show: Boolean) {
+        viewModelScope.launch { prefs.setShowSecondsOnHome(show) }
+    }
+
+    // ==================== Secret Vault Gesture (5 taps + Long Press) ====================
+
+    fun onHomeClockTap() {
+        val now = System.currentTimeMillis()
+        val nextCount = if (now - lastSecretTapMs > 3000L) 1 else (_uiState.value.secretTapCount + 1).coerceAtMost(5)
+        lastSecretTapMs = now
+        _uiState.update { it.copy(secretTapCount = nextCount) }
+        if (nextCount == 5) {
+            triggerHaptic()
+            showToast("已就绪：长按时钟进入隐藏密室")
+        }
+    }
+
+    fun onHomeClockLongPress() {
+        val now = System.currentTimeMillis()
+        if (_uiState.value.secretTapCount >= 5 && now - lastSecretTapMs <= 6000L) {
+            _uiState.update { it.copy(secretTapCount = 0, screen = PenScreen.VAULT, vaultUnlocked = false) }
+            triggerHaptic()
+            refreshSystemDiagnostics()
+        }
+    }
+
+    fun verifyVaultPin(input: String): Boolean {
+        val ok = input == _uiState.value.config.vaultPin
+        if (ok) {
+            _uiState.update { it.copy(vaultUnlocked = true) }
+            triggerHaptic()
+        } else {
+            showToast("密室密码错误")
+        }
         return ok
     }
 
-    // --- Poetry ---
-    fun refreshPoem(force: Boolean) {
-        if (_isPoemLoading.value) return
+    fun updateVaultPin(newPin: String) {
+        val clean = newPin.trim()
+        if (clean.length !in 4..8 || !clean.all { it.isDigit() }) {
+            showToast("密码需为 4~8 位数字")
+            return
+        }
         viewModelScope.launch {
-            _isPoemLoading.value = true
-            poetryRepo.refreshPoem(force = force)
-            _isPoemLoading.value = false
+            prefs.setVaultPin(clean)
+            showToast("密室密码已更新")
         }
     }
 
-    // --- China ICP-Filed Multi-City Weather ---
-    fun refreshWeather(force: Boolean) {
-        if (_isWeatherLoading.value) return
+    // ==================== Static Wallpaper ====================
+
+    fun setStaticWallpaperMode(mode: String) {
         viewModelScope.launch {
-            _isWeatherLoading.value = true
-            val res = weatherRepo.refreshWeather(force = force)
-            _weatherSourceStatus.value = res.sourceLabel
-            _isWeatherLoading.value = false
-            if (force && res.errorHint != null) {
-                showToast(res.errorHint)
-            } else if (force && res.isLive) {
-                showToast("天气已同步（${res.sourceLabel}）")
-            }
+            prefs.setStaticWallpaper(mode)
+            showToast(if (mode == PenConfig.WALLPAPER_SOLID) "已切换纯色零过绘制模式" else "静态壁纸已生效")
         }
     }
 
-    fun searchWeatherCities(query: String) {
-        onUserInteraction()
+    fun importStaticWallpaperFromUri(uri: Uri) {
         viewModelScope.launch {
-            weatherRepo.searchCities(query).onSuccess { list ->
-                _citySearchResults.value = list.ifEmpty { WmoWeatherMapper.presetCities.take(16) }
-            }
+            SafeMediaImporter.importImageFromUri(app, uri, "penos_static_bg")
+                .onSuccess { path ->
+                    prefs.setStaticWallpaper(PenConfig.WALLPAPER_CUSTOM, path)
+                    showToast("自定义静态壁纸已应用")
+                }
+                .onFailure { showToast("壁纸导入失败：${it.message}") }
         }
     }
 
-    fun selectWeatherCity(city: WeatherCityOption) {
-        onUserInteraction()
+    fun importStaticWallpaperFromPath(path: String) {
         viewModelScope.launch {
-            _isWeatherLoading.value = true
-            val res = weatherRepo.selectCityAndRefresh(city)
-            _weatherSourceStatus.value = res.sourceLabel
-            _isWeatherLoading.value = false
-            if (res.isLive) {
-                showToast("已切换至 ${city.displayName}（${res.sourceLabel}）")
-            } else {
-                showToast("已保存城市 ${city.displayName}（离线缓存）")
-            }
+            SafeMediaImporter.importImageFromFilePath(app, path, "penos_static_bg")
+                .onSuccess { saved ->
+                    prefs.setStaticWallpaper(PenConfig.WALLPAPER_CUSTOM, saved)
+                    showToast("本地静态壁纸已应用")
+                }
+                .onFailure { showToast("导入失败：${it.message}") }
         }
     }
 
-    fun removeSavedWeatherCity(cityName: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.removeWeatherCityFromFavorites(cityName) }
-    }
+    // ==================== Scan App & App Launcher ====================
 
-    fun saveWeatherApiKeys(qWeatherKey: String, amapKey: String) {
-        onUserInteraction()
+    fun loadInstalledApps() {
         viewModelScope.launch {
-            prefs.saveWeatherApiKeys(qWeatherKey, amapKey)
-            showToast("已保存国内备案天气 Key，正在同步…")
-            refreshWeather(force = true)
-        }
-    }
-
-    // --- Custom Timed Calendar Events ---
-    fun addCalendarEvent(dateIso: String, timeHHmm: String, title: String) {
-        onUserInteraction()
-        val cleanTitle = title.trim()
-        if (cleanTitle.isBlank()) return
-        val cleanTime = normalizeHHmm(timeHHmm)
-        viewModelScope.launch(Dispatchers.IO) {
-            calendarEventDao.insertEvent(
-                CalendarEventEntity(dateIso = dateIso, timeHHmm = cleanTime, title = cleanTitle)
-            )
-        }
-        showToast("已添加日程 $cleanTime $cleanTitle")
-    }
-
-    fun deleteCalendarEvent(eventId: Long) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) { calendarEventDao.deleteById(eventId) }
-    }
-
-    // --- Todo Items ---
-    fun addTodo(title: String, dueDateIso: String = _clockTick.value.isoDate, priority: Int = 1) {
-        onUserInteraction()
-        val trimmed = title.trim()
-        if (trimmed.isBlank()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            todoDao.insertTodo(TodoItemEntity(title = trimmed, dueDateIso = dueDateIso, priority = priority))
-        }
-    }
-
-    fun toggleTodoDone(todo: TodoItemEntity) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) { todoDao.setDone(todo.id, !todo.isDone) }
-    }
-
-    fun deleteTodo(todoId: Long) {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) { todoDao.deleteById(todoId) }
-    }
-
-    fun clearCompletedTodos() {
-        onUserInteraction()
-        viewModelScope.launch(Dispatchers.IO) { todoDao.clearCompleted() }
-        showToast("已清理已完成待办")
-    }
-
-    // --- Installed Apps & Jiuxuewang Component-Level Launch/Guard ---
-    fun refreshInstalledApps() {
-        viewModelScope.launch {
-            val apps = appRepo.loadInstalledApps()
-            _installedApps.value = apps
-
-            val cfg = prefs.currentConfig()
+            val apps = installedAppsRepo.loadInstalledApps()
+            _uiState.update { it.copy(installedApps = apps) }
+            // Auto-bind first detected scan app if unset
+            val cfg = _uiState.value.config
             if (cfg.scanAppPackage.isBlank()) {
-                apps.firstOrNull { it.isLikelyScanApp }?.let { prefs.setScanTarget(it.packageName, it.launchActivityName) }
-            }
-            if (cfg.blockedStockLauncherPackage.isBlank()) {
-                val detectedHome = apps.firstOrNull { it.isHomeLauncher }
-                if (detectedHome != null) {
-                    prefs.setBlockedStockLauncherPackage(detectedHome.packageName)
-                    if (detectedHome.homeActivityName.isNotBlank()) {
-                        prefs.addBlockedHomeActivity("${detectedHome.packageName}/${detectedHome.homeActivityName}")
-                    }
-                }
-            }
-            if (cfg.pinnedDockPackages.isEmpty() && apps.isNotEmpty()) {
-                val initialPinned = apps.asSequence()
-                    .filter { !cfg.hiddenPackages.contains(it.packageName) }
-                    .take(4)
-                    .map { it.packageName }
-                    .toList()
-                if (initialPinned.isNotEmpty()) {
-                    prefs.setPinnedPackages(initialPinned)
+                val likely = apps.firstOrNull { it.isLikelyScanApp }
+                if (likely != null) {
+                    prefs.setScanApp(likely.packageName, likely.launchActivityName)
                 }
             }
         }
-    }
-
-    fun inspectPackageActivities(packageName: String) {
-        viewModelScope.launch { _inspectedActivities.value = appRepo.listExportedActivities(packageName) }
     }
 
     fun launchScanApp() {
-        onUserInteraction()
-        val cfg = uiState.value.config
+        val cfg = _uiState.value.config
         if (cfg.scanAppPackage.isBlank()) {
-            showToast("请先在密室或雷达中绑定「学王扫学」应用及 Activity")
+            showToast("未绑定扫学入口，请在密室或全部应用中绑定")
+            navigateTo(PenScreen.APPS)
             return
         }
-        val ok = appRepo.launchComponent(
+        val ok = installedAppsRepo.launchComponent(
             packageName = cfg.scanAppPackage,
-            activityClass = cfg.scanActivityClass,
-            isolateScanStack = true
+            activityClass = cfg.scanAppActivity,
+            isolateScanStack = cfg.scanAppPackage == cfg.blockedHomePackage
         )
-        if (!ok) showToast("未找到扫学入口，请在密室重新选择 Activity")
+        if (!ok) showToast("无法启动绑定的扫学应用")
     }
 
-    fun launchApp(packageName: String) {
-        onUserInteraction()
-        val appInfo = _installedApps.value.firstOrNull { it.packageName == packageName }
-        val preferredAct = appInfo?.launchActivityName.orEmpty()
-        if (!appRepo.launchComponent(packageName, preferredAct)) {
-            showToast("无法启动该应用（可能已被系统禁用）")
-        }
-    }
-
-    fun toggleHiddenApp(packageName: String) {
-        viewModelScope.launch { prefs.toggleHiddenPackage(packageName) }
-    }
-
-    fun togglePinnedApp(packageName: String) {
-        viewModelScope.launch { prefs.togglePinnedPackage(packageName) }
+    fun launchApp(packageName: String, activityClass: String = "") {
+        val ok = installedAppsRepo.launchComponent(packageName, activityClass)
+        if (!ok) showToast("启动应用失败：$packageName")
     }
 
     fun bindScanTarget(packageName: String, activityClass: String = "") {
         viewModelScope.launch {
-            prefs.setScanTarget(packageName, activityClass)
-            val short = activityClass.substringAfterLast('.').ifBlank { packageName }
-            showToast("已绑定扫学入口：$short")
+            prefs.setScanApp(packageName, activityClass)
+            showToast("已绑定扫学入口")
         }
     }
 
-    fun bindBlockedStockLauncher(packageName: String) {
+    fun toggleHiddenApp(packageName: String) {
+        val current = _uiState.value.config.hiddenPackages
+        val updated = if (current.contains(packageName)) current - packageName else current + packageName
+        viewModelScope.launch { prefs.setHiddenPackages(updated) }
+    }
+
+    fun inspectPackageActivities(packageName: String) {
         viewModelScope.launch {
-            prefs.setBlockedStockLauncherPackage(packageName)
-            showToast("已设置原厂桌面包名拦截")
+            val list = installedAppsRepo.listExportedActivities(packageName)
+            _uiState.update { it.copy(inspectedActivities = list) }
         }
     }
 
-    fun toggleBlockedHomeActivity(flatComponent: String) {
-        viewModelScope.launch {
-            prefs.toggleBlockedHomeActivity(flatComponent)
-            showToast("已更新组件级拉黑名单")
-        }
-    }
+    // ==================== Jiuxuewang Anti-Lock & 60s Bypass ====================
 
-    fun addBlockedHomeActivity(flatComponent: String) {
+    fun refreshSystemDiagnostics() {
         viewModelScope.launch {
-            prefs.addBlockedHomeActivity(flatComponent)
-            showToast("已拉黑原厂桌面组件：${flatComponent.substringAfterLast('.')}")
-        }
-    }
-
-    fun toggleWidget(widgetId: String) {
-        viewModelScope.launch {
-            val current = uiState.value.config.enabledWidgetIds.toMutableList()
-            if (current.contains(widgetId)) {
-                if (current.size <= 1) {
-                    showToast("桌面至少保留一个小组件")
-                    return@launch
-                }
-                current.remove(widgetId)
-            } else {
-                current.add(widgetId)
+            val diag = SystemTakeoverHelper.inspectSystem(app)
+            _uiState.update { it.copy(diagnostics = diag) }
+            if (_uiState.value.config.blockedHomePackage.isBlank() && diag.detectedStockHomeComponent.contains("/")) {
+                val stockPkg = diag.detectedStockHomeComponent.substringBefore("/")
+                prefs.setBlockedHomePackage(stockPkg)
+                prefs.setBlockedHomeActivities(setOf(diag.detectedStockHomeComponent))
             }
-            prefs.setEnabledWidgets(current)
         }
     }
 
-    fun moveWidget(widgetId: String, delta: Int) {
+    fun setBlockedHomePackage(pkg: String) {
         viewModelScope.launch {
-            val current = uiState.value.config.enabledWidgetIds.toMutableList()
-            val idx = current.indexOf(widgetId)
-            if (idx == -1) return@launch
-            val targetIdx = (idx + delta).coerceIn(0, current.lastIndex)
-            if (targetIdx == idx) return@launch
-            val item = current.removeAt(idx)
-            current.add(targetIdx, item)
-            prefs.setEnabledWidgets(current)
+            prefs.setBlockedHomePackage(pkg)
+            showToast("已更新拦截原厂桌面包名")
         }
     }
 
-    fun updateStandBySettings(
-        timeoutSec: Int? = null,
-        brightness: Float? = null,
-        rightWidget: String? = null,
-        clockColor: String? = null
-    ) {
-        viewModelScope.launch { prefs.setStandByConfig(timeoutSec, brightness, rightWidget, clockColor) }
+    fun toggleBlockedHomeActivity(component: String) {
+        val clean = component.trim()
+        if (clean.isBlank()) return
+        val cur = _uiState.value.config.blockedHomeActivities
+        val next = if (cur.contains(clean)) cur - clean else cur + clean
+        viewModelScope.launch { prefs.setBlockedHomeActivities(next) }
     }
 
-    fun setVaultPin(pin: String) {
-        viewModelScope.launch {
-            prefs.setVaultPin(pin)
-            showToast(if (pin.isBlank()) "已关闭密室密码锁" else "密室密码已更新")
+    fun toggleStockHomeBypass60s() {
+        if (AntiLockCoordinator.isStockHomeBypassActive()) {
+            AntiLockCoordinator.revokeStockHomeBypass()
+            _uiState.update { it.copy(stockHomeBypassSec = 0) }
+            showToast("已立即恢复久学网防锁回拦截")
+        } else {
+            AntiLockCoordinator.grantStockHomeBypass(60_000L)
+            _uiState.update { it.copy(stockHomeBypassSec = 60) }
+            showToast("已临时放行原厂桌面 60 秒")
         }
+        triggerHaptic()
     }
 
     fun setKeepAliveEnabled(enabled: Boolean) {
-        viewModelScope.launch { prefs.setKeepAliveEnabled(enabled) }
-    }
-
-    fun setPenFramePreviewEnabled(enabled: Boolean) {
-        viewModelScope.launch { prefs.setPenFramePreviewEnabled(enabled) }
-    }
-
-    // --- System Takeover Diagnostics & Root ---
-    fun refreshSystemDiagnostics() {
-        viewModelScope.launch { _diagnostics.value = SystemTakeoverHelper.inspectSystem(app) }
-    }
-
-    fun executeRootSetDefaultHome() {
         viewModelScope.launch {
-            val cmd = "cmd package set-home-activity ${app.packageName}/.MainActivity"
-            SystemTakeoverHelper.runRootCommand(cmd)
-                .onSuccess {
-                    showToast("Root 设为默认桌面成功")
-                    refreshSystemDiagnostics()
-                }
-                .onFailure { showToast("Root 执行失败: ${it.message}") }
+            prefs.setKeepAliveEnabled(enabled)
+            showToast(if (enabled) "已开启防强杀低功耗守护" else "已关闭后台常驻守护")
         }
     }
 
-    fun executeRootDisableHomeComponent(componentFlat: String) {
-        val target = componentFlat.ifBlank { uiState.value.diagnostics.detectedStockHomeComponent }
-        if (target.isBlank() || !target.contains("/")) {
-            showToast("未识别到原厂 HomeActivity 组件，请先在雷达中查看")
+    fun executeRootDisableHomeComponent() {
+        val comp = _uiState.value.config.blockedHomeActivities.firstOrNull()
+            ?: _uiState.value.diagnostics.detectedStockHomeComponent
+        if (comp.isBlank()) {
+            showToast("未检测到原厂 HomeActivity 组件")
             return
         }
         viewModelScope.launch {
-            SystemTakeoverHelper.runRootCommand("pm disable $target")
-                .onSuccess {
-                    showToast("已单组件禁用原厂桌面，同包名扫学不受影响！")
-                    refreshSystemDiagnostics()
-                }
-                .onFailure { showToast("Root 执行失败: ${it.message}") }
+            SystemTakeoverHelper.runRootCommand("pm disable $comp")
+                .onSuccess { showToast("已通过 Root 禁用原厂桌面组件") }
+                .onFailure { showToast("Root 执行失败：${it.message}") }
         }
     }
 
-    fun executeRootFreezeStockLauncher(freeze: Boolean) {
-        val target = uiState.value.config.blockedStockLauncherPackage
-        if (target.isBlank()) {
-            showToast("请先选择原厂桌面包名")
-            return
-        }
+    // ==================== AI Chat & External MCP ====================
+
+    fun selectAiProfile(profileId: String) {
         viewModelScope.launch {
-            val cmd = if (freeze) "pm disable-user --user 0 $target" else "pm enable $target"
-            SystemTakeoverHelper.runRootCommand(cmd)
-                .onSuccess {
-                    showToast(if (freeze) "已冻结原厂桌面防锁回" else "已恢复原厂桌面")
-                    refreshSystemDiagnostics()
-                }
-                .onFailure { showToast("Root 执行失败: ${it.message}") }
+            prefs.selectAiProfile(profileId)
+            val name = _uiState.value.config.aiProfiles.firstOrNull { it.id == profileId }?.name.orEmpty()
+            if (name.isNotBlank()) showToast("已切换模型：$name")
         }
     }
 
-    // --- Baicizhan 2.0 Vocab Trainer ---
-    fun switchVocabBook(bookId: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setActiveVocabBook(bookId) }
-    }
-
-    fun importCustomVocabFromUri(uri: Uri) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.readTextFromUri(app, uri)
-                .onSuccess { text -> importParsedWordbook(text) }
-                .onFailure { showToast("读取词书失败：${it.message}") }
-        }
-    }
-
-    fun importCustomVocabFromPath(rawPath: String) {
-        onUserInteraction()
-        viewModelScope.launch {
-            SafeMediaImporter.readTextFromPath(rawPath)
-                .onSuccess { text -> importParsedWordbook(text) }
-                .onFailure { showToast("路径读取失败：${it.message}") }
-        }
-    }
-
-    private suspend fun importParsedWordbook(rawText: String) {
-        val parsed = VocabCatalogExpanded.parseCustomWordbook(rawText, bookId = "custom")
-        if (parsed.isEmpty()) {
-            showToast("未解析到有效单词（支持 word,音标,释义 或 word\\t释义）")
-            return
-        }
-        vocabDao.upsertWords(parsed)
-        prefs.setActiveVocabBook("custom")
-        showToast("成功导入 ${parsed.size} 个自定义单词！")
-    }
-
-    fun selectVocabOption(optionWordId: String) {
-        onUserInteraction()
-        val session = _vocabSession.value
-        val current = session.currentWord ?: return
-        if (session.selectedOptionId != null) return
-
-        val isCorrect = (optionWordId == current.word.id)
-        val now = System.currentTimeMillis()
-        val prev = current.progress
-
-        val nextFamiliarity = if (isCorrect) ((prev?.familiarity ?: 0) + 1).coerceAtMost(5) else 0
-        val nextStatus = if (isCorrect && nextFamiliarity >= 3) {
-            VocabProgressEntity.STATUS_MASTERED
+    fun upsertAiProfile(profile: AiApiProfile) {
+        val current = _uiState.value.config.aiProfiles
+        val updated = if (current.any { it.id == profile.id }) {
+            current.map { if (it.id == profile.id) profile else it }
         } else {
-            VocabProgressEntity.STATUS_LEARNING
-        }
-        val intervalMs = when (nextFamiliarity) {
-            0 -> 5L * 60L * 1000L
-            1 -> 30L * 60L * 1000L
-            2 -> 12L * 60L * 60L * 1000L
-            else -> 3L * 24L * 60L * 60L * 1000L
-        }
-
-        val updated = VocabProgressEntity(
-            wordId = current.word.id,
-            status = nextStatus,
-            familiarity = nextFamiliarity,
-            nextReviewAt = now + intervalMs,
-            wrongCount = (prev?.wrongCount ?: 0) + if (isCorrect) 0 else 1,
-            updatedAt = now
-        )
-
-        _vocabSession.update {
-            it.copy(
-                selectedOptionId = optionWordId,
-                answeredCorrectly = isCorrect,
-                showExampleHint = true,
-                sessionStreak = if (isCorrect) it.sessionStreak + 1 else 0,
-                dailyMasteredCount = if (isCorrect && nextStatus == VocabProgressEntity.STATUS_MASTERED) {
-                    it.dailyMasteredCount + 1
-                } else it.dailyMasteredCount
-            )
-        }
-
-        viewModelScope.launch {
-            vocabDao.upsertProgress(updated)
-            delay(if (isCorrect) 650L else 1200L)
-            rebuildVocabQuestion(forceNextWord = true)
-        }
-    }
-
-    fun killCurrentWord() {
-        onUserInteraction()
-        val current = _vocabSession.value.currentWord ?: return
-        val now = System.currentTimeMillis()
-        val mastered = VocabProgressEntity(
-            wordId = current.word.id,
-            status = VocabProgressEntity.STATUS_MASTERED,
-            familiarity = 5,
-            nextReviewAt = now + 30L * 24L * 60L * 60L * 1000L,
-            wrongCount = 0,
-            updatedAt = now
-        )
-        _vocabSession.update {
-            it.copy(
-                slashEffectNonce = it.slashEffectNonce + 1,
-                dailyMasteredCount = it.dailyMasteredCount + 1
-            )
+            current + profile
         }
         viewModelScope.launch {
-            vocabDao.upsertProgress(mastered)
-            delay(340L)
-            rebuildVocabQuestion(forceNextWord = true)
+            prefs.saveAiProfiles(updated, profile.id)
+            showToast("模型预设「${profile.name}」已保存")
         }
     }
 
-    fun toggleVocabHint() {
-        onUserInteraction()
-        _vocabSession.update { it.copy(showExampleHint = !it.showExampleHint) }
-    }
-
-    fun nextVocabWord() {
-        onUserInteraction()
-        rebuildVocabQuestion(forceNextWord = true)
-    }
-
-    private fun rebuildVocabQuestion(forceNextWord: Boolean) {
-        val activeBook = _vocabSession.value.activeBook
-        val mistakesAll = allWordsCache.filter { (it.progress?.wrongCount ?: 0) > 0 }
-        val customAll = allWordsCache.filter { it.word.bookId == "custom" }
-
-        val bookWords = when (activeBook) {
-            "mistakes" -> mistakesAll.ifEmpty { allWordsCache.take(10) }
-            else -> allWordsCache.filter { it.word.bookId == activeBook }.ifEmpty { allWordsCache }
+    fun deleteAiProfile(profileId: String) {
+        val current = _uiState.value.config.aiProfiles
+        if (current.size <= 1) {
+            showToast("至少需保留 1 套模型预设")
+            return
         }
-        if (bookWords.isEmpty()) return
-
-        val mastered = bookWords.count { it.progress?.status == VocabProgressEntity.STATUS_MASTERED }
-        val learning = bookWords.count { it.progress?.status == VocabProgressEntity.STATUS_LEARNING }
-
-        val previousId = _vocabSession.value.currentWord?.word?.id
-        val currentOrNext = (if (!forceNextWord && previousId != null) {
-            bookWords.firstOrNull { it.word.id == previousId }
-        } else null) ?: pickNextWord(bookWords, previousId)
-
-        val distractors = allWordsCache
-            .asSequence()
-            .filter { it.word.id != currentOrNext.word.id }
-            .shuffled()
-            .take(3)
-            .map {
-                VocabQuizOption(
-                    wordId = it.word.id,
-                    meaningZh = "${it.word.partOfSpeech} ${it.word.meaningZh}",
-                    mnemonicTag = it.word.mnemonicTag,
-                    accentHex = it.word.accentHex,
-                    isCorrect = false
-                )
-            }.toList()
-
-        val correctOption = VocabQuizOption(
-            wordId = currentOrNext.word.id,
-            meaningZh = "${currentOrNext.word.partOfSpeech} ${currentOrNext.word.meaningZh}",
-            mnemonicTag = currentOrNext.word.mnemonicTag,
-            accentHex = currentOrNext.word.accentHex,
-            isCorrect = true
-        )
-
-        _vocabSession.update {
-            it.copy(
-                activeBook = activeBook,
-                currentWord = currentOrNext,
-                options = (distractors + correctOption).shuffled(),
-                selectedOptionId = null,
-                answeredCorrectly = null,
-                showExampleHint = false,
-                masteredCount = mastered,
-                learningCount = learning,
-                mistakeCount = mistakesAll.size,
-                customCount = customAll.size,
-                totalInBook = bookWords.size
-            )
+        val updated = current.filterNot { it.id == profileId }
+        val nextActive = if (_uiState.value.config.activeAiProfileId == profileId) {
+            updated.first().id
+        } else {
+            _uiState.value.config.activeAiProfileId
         }
-    }
-
-    private fun pickNextWord(pool: List<VocabWordWithProgress>, excludeId: String?): VocabWordWithProgress {
-        val now = System.currentTimeMillis()
-        val unmastered = pool.filter { it.progress?.status != VocabProgressEntity.STATUS_MASTERED }
-        val dueReviews = unmastered.filter {
-            val p = it.progress
-            p != null && p.nextReviewAt in 1L..now && it.word.id != excludeId
-        }
-        if (dueReviews.isNotEmpty()) return dueReviews.first()
-        val fresh = unmastered.filter { it.word.id != excludeId }
-        if (fresh.isNotEmpty()) return fresh.random()
-        return pool.firstOrNull { it.word.id != excludeId } ?: pool.first()
-    }
-
-    // --- Lab AI + Harness MCP ---
-    fun saveAiConfig(baseUrl: String, apiKey: String, model: String, externalMcpUrl: String) {
-        onUserInteraction()
         viewModelScope.launch {
-            prefs.saveAiConfig(baseUrl, apiKey, model, externalMcpUrl)
-            showToast("AI 与 MCP 接口配置已保存")
+            prefs.saveAiProfiles(updated, nextActive)
+            showToast("已删除模型预设")
         }
     }
 
-    fun selectAiPreset(presetId: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.setActiveAiPreset(presetId) }
-    }
-
-    fun upsertAiPreset(preset: AiPreset) {
-        onUserInteraction()
+    fun saveExternalMcp(url: String, token: String) {
         viewModelScope.launch {
-            prefs.upsertAiPreset(preset)
-            showToast("已保存 AI 预设「${preset.name}」")
+            prefs.saveExternalMcp(url, token)
+            showToast("外部 MCP 配置已保存")
+            if (url.isNotBlank()) testExternalMcpConnection(url, token)
         }
     }
 
-    fun deleteAiPreset(presetId: String) {
-        onUserInteraction()
-        viewModelScope.launch { prefs.deleteAiPreset(presetId) }
-    }
-
-    fun clearAiChat() {
-        onUserInteraction()
-        _aiMessages.value = LabState().messages
-    }
-
-    fun setMcpPreviewBeforeApply(enabled: Boolean) {
-        onUserInteraction()
-        viewModelScope.launch {
-            prefs.setMcpPreviewBeforeApply(enabled)
-            showToast(if (enabled) "已开启 MCP 变更差异预览护栏" else "已切换为 MCP 直接执行（仍自动存档快照）")
-        }
-    }
-
-    fun togglePendingMcpChange(changeId: String) {
-        onUserInteraction()
-        _pendingMcpChanges.update { list ->
-            list.map { if (it.id == changeId) it.copy(selected = !it.selected) else it }
-        }
-    }
-
-    fun discardPendingMcpChanges() {
-        onUserInteraction()
-        _pendingMcpChanges.value = emptyList()
-        showToast("已放弃待应用的 AI 修改")
-    }
-
-    fun applyPendingMcpChanges() {
-        onUserInteraction()
-        val selected = _pendingMcpChanges.value.filter { it.selected }
-        if (selected.isEmpty()) {
-            _pendingMcpChanges.value = emptyList()
-            showToast("未勾选任何变更项")
+    fun testExternalMcpConnection(
+        url: String = _uiState.value.config.externalMcpUrl,
+        token: String = _uiState.value.config.externalMcpToken
+    ) {
+        if (url.isBlank()) {
+            _aiFlow.update { it.copy(discoveredMcpTools = emptyList(), mcpStatusNote = "未配置外部 MCP 地址") }
             return
         }
         viewModelScope.launch {
-            val label = selected.first().humanSummary.take(26)
-            snapshotManager.captureSnapshot("AI 应用前：$label", "MCP")
-            val logs = mutableListOf<String>()
-            selected.forEach { item ->
-                val argsObj = runCatching { JSONObject(item.argsJson) }.getOrDefault(JSONObject())
-                val res = harnessExecutor.execute(item.toolName, argsObj)
-                logs.add("${if (res.success) "✓" else "✗"} ${res.summary}")
-            }
-            _pendingMcpChanges.value = emptyList()
-            _aiMessages.update {
-                (it + AiChatMessage(
-                    id = "apply_${System.currentTimeMillis()}",
-                    role = "assistant",
-                    content = "已存档快照并应用 ${selected.size} 项变更（可随时一键撤销）：\n${logs.joinToString("\n")}",
-                    toolActionsSummary = logs.joinToString(" · ")
-                )).takeLast(24)
-            }
-            showToast("已应用 ${selected.size} 项 AI 变更（支持一键回滚）")
-        }
-    }
-
-    fun rollbackLatestSnapshot() {
-        onUserInteraction()
-        viewModelScope.launch {
-            snapshotManager.restoreLatestSnapshot()
-                .onSuccess { showToast(it) }
-                .onFailure { showToast(it.message ?: "暂无可撤销的桌面快照") }
-        }
-    }
-
-    fun restoreSnapshot(snapshotId: Long) {
-        onUserInteraction()
-        viewModelScope.launch {
-            snapshotManager.restoreSnapshot(snapshotId)
-                .onSuccess { showToast(it) }
-                .onFailure { showToast(it.message ?: "回滚失败") }
+            _aiFlow.update { it.copy(isTestingMcp = true, mcpStatusNote = "正在拉取工具列表…") }
+            aiClient.discoverExternalMcpTools(url, token)
+                .onSuccess { tools ->
+                    _aiFlow.update {
+                        it.copy(
+                            isTestingMcp = false,
+                            discoveredMcpTools = tools,
+                            mcpStatusNote = "已连接 · 发现 ${tools.size} 个 MCP 工具"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _aiFlow.update {
+                        it.copy(
+                            isTestingMcp = false,
+                            discoveredMcpTools = emptyList(),
+                            mcpStatusNote = "连接失败：${err.message}"
+                        )
+                    }
+                }
         }
     }
 
     fun sendAiPrompt(prompt: String) {
         val clean = prompt.trim()
-        if (clean.isBlank() || _isAiLoading.value) return
-        onUserInteraction()
-
-        val cfg = uiState.value.config
+        if (clean.isBlank() || _aiFlow.value.isLoading) return
+        val cfg = _uiState.value.config
         val profile = cfg.activeAiProfile()
-        val userMsg = AiChatMessage("u_${System.currentTimeMillis()}", "user", clean)
-        val historyBefore = _aiMessages.value
-        _aiMessages.value = (historyBefore + userMsg).takeLast(24)
+
+        val userMsg = AiChatMessage(
+            id = "u_${System.currentTimeMillis()}",
+            role = "user",
+            content = clean
+        )
+        val historyBefore = _aiFlow.value.messages
+        _aiFlow.update {
+            it.copy(messages = it.messages + userMsg, isLoading = true)
+        }
 
         viewModelScope.launch {
-            _isAiLoading.value = true
-            var autoSnapTaken = false
-            val stagedThisTurn = mutableListOf<PendingMcpChange>()
-
-            val result = aiMcpClient.sendChatWithMcp(
+            aiClient.sendChat(
                 profile = profile,
                 history = historyBefore,
                 userPrompt = clean,
                 externalMcpUrl = cfg.externalMcpUrl,
-                desktopToolExecutor = { toolName, args ->
-                    if (harnessExecutor.isReadOnlyTool(toolName)) {
-                        harnessExecutor.execute(toolName, args)
-                    } else if (cfg.mcpPreviewBeforeApply) {
-                        val summary = harnessExecutor.describeChange(toolName, args)
-                        val pending = PendingMcpChange(
-                            id = "chg_${System.currentTimeMillis()}_${stagedThisTurn.size}",
-                            toolName = toolName,
-                            argsJson = args.toString(),
-                            humanSummary = summary,
-                            selected = true
-                        )
-                        stagedThisTurn.add(pending)
-                        PenMcpToolResult(toolName, "已加入待确认预览队列：$summary（等待用户在确认卡片点击「应用并存档」）", true)
-                    } else {
-                        if (!autoSnapTaken) {
-                            snapshotManager.captureSnapshot("AI 修改前：${clean.take(20)}", "MCP")
-                            autoSnapTaken = true
-                        }
-                        harnessExecutor.execute(toolName, args)
-                    }
-                }
-            )
-            _isAiLoading.value = false
-            if (stagedThisTurn.isNotEmpty()) {
-                _pendingMcpChanges.update { it + stagedThisTurn }
-            }
-            result.onSuccess { reply ->
-                _aiMessages.update { (it + reply).takeLast(24) }
+                externalMcpToken = cfg.externalMcpToken
+            ).onSuccess { reply ->
+                _aiFlow.update { it.copy(messages = it.messages + reply, isLoading = false) }
             }.onFailure { err ->
-                _aiMessages.update {
-                    (it + AiChatMessage("err_${System.currentTimeMillis()}", "assistant", "请求失败：${err.message}")).takeLast(24)
+                val errReply = AiChatMessage(
+                    id = "e_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = "请求失败：${err.message}"
+                )
+                _aiFlow.update { it.copy(messages = it.messages + errReply, isLoading = false) }
+            }
+        }
+    }
+
+    fun clearAiChat() {
+        _aiFlow.update { it.copy(messages = emptyList()) }
+    }
+
+    // ==================== Baicizhan Offline Vocabulary ====================
+
+    fun revealVocabMeaning() {
+        _uiState.update { it.copy(vocab = it.vocab.copy(showMeaning = true)) }
+    }
+
+    fun gradeCurrentWord(grade: Int) {
+        // grade: 0=忘记, 1=模糊, 2=认识, 3=斩词(已掌握)
+        val word = _uiState.value.vocab.currentWord ?: return
+        val existing = cachedProgressMap[word.id]
+        val now = System.currentTimeMillis()
+        val (newLevel, nextIntervalMs, wrongInc) = when (grade) {
+            3 -> Triple(3, 30L * 24 * 3600_000L, 0)
+            2 -> Triple(((existing?.masteryLevel ?: 0) + 1).coerceAtMost(3), 24L * 3600_000L, 0)
+            1 -> Triple(1, 30L * 60_000L, 0)
+            else -> Triple(0, 5L * 60_000L, 1)
+        }
+        val entity = VocabProgressEntity(
+            wordId = word.id,
+            masteryLevel = newLevel,
+            wrongCount = (existing?.wrongCount ?: 0) + wrongInc,
+            lastReviewedAt = now,
+            nextReviewAt = now + nextIntervalMs
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            vocabDao.upsertProgress(entity)
+            withContext(Dispatchers.Main) {
+                val updatedMap = cachedProgressMap.toMutableMap().apply { put(word.id, entity) }
+                cachedProgressMap = updatedMap
+                val next = pickNextWord(cachedBookWords, updatedMap, excludeId = word.id)
+                _uiState.update {
+                    it.copy(vocab = it.vocab.copy(currentWord = next, showMeaning = false))
                 }
             }
         }
+        triggerHaptic()
     }
 
-    // --- Cloud Sync ---
-    fun saveWebDavConfig(url: String, user: String, pass: String) {
+    fun switchVocabBook(bookId: String) {
         viewModelScope.launch {
-            prefs.saveWebDavConfig(url, user, pass)
-            showToast("WebDAV 配置已保存")
+            prefs.setActiveVocabBook(bookId)
+            _uiState.update { it.copy(vocab = it.vocab.copy(currentWord = null, showMeaning = false)) }
         }
     }
 
-    fun syncVocabViaWebDav() {
-        if (_isSyncing.value) return
+    fun importCustomVocabFromUri(uri: Uri) {
         viewModelScope.launch {
-            _isSyncing.value = true
-            val result = syncManager.syncWithWebDav()
-            _isSyncing.value = false
-            result.onSuccess { showToast(it.message) }
-                .onFailure { showToast(it.message ?: "WebDAV 同步失败") }
+            SafeMediaImporter.readTextFromUri(app, uri)
+                .onSuccess { importParsedVocab(it) }
+                .onFailure { showToast("词书读取失败：${it.message}") }
         }
     }
 
-    fun generatePortableSyncCode() {
+    fun importCustomVocabFromPath(rawPath: String) {
         viewModelScope.launch {
-            _generatedSyncCode.value = syncManager.generateSyncCode()
-            showToast("离线同步码已生成")
+            SafeMediaImporter.readTextFromPath(rawPath)
+                .onSuccess { importParsedVocab(it) }
+                .onFailure { showToast("词书读取失败：${it.message}") }
         }
     }
 
-    fun importPortableSyncCode(code: String) {
-        viewModelScope.launch {
-            syncManager.importSyncCode(code)
-                .onSuccess { showToast(it.message) }
-                .onFailure { showToast(it.message ?: "同步码导入失败") }
+    private suspend fun importParsedVocab(rawText: String) {
+        val parsed = withContext(Dispatchers.Default) {
+            VocabCatalogExpanded.parseCustomWordbook(rawText, bookId = "custom")
+        }
+        if (parsed.isEmpty()) {
+            showToast("未识别到有效单词行")
+            return
+        }
+        withContext(Dispatchers.IO) { vocabDao.insertWords(parsed) }
+        prefs.setActiveVocabBook("custom")
+        showToast("已导入 ${parsed.size} 个自定义单词")
+    }
+
+    // ==================== StandBy Clock & Pomodoro Focus ====================
+
+    fun openFocusMode(subMode: FocusSubMode) {
+        _pomodoroFlow.update { it.copy(subMode = subMode) }
+        navigateTo(PenScreen.FOCUS)
+    }
+
+    fun setFocusSubMode(subMode: FocusSubMode) {
+        _pomodoroFlow.update { it.copy(subMode = subMode) }
+    }
+
+    fun togglePomodoroRunning() {
+        _pomodoroFlow.update { it.copy(isRunning = !it.isRunning) }
+        triggerHaptic()
+    }
+
+    fun resetPomodoro() {
+        val mins = _uiState.value.config.pomodoroMinutes
+        val secs = mins * 60
+        _pomodoroFlow.update {
+            it.copy(isRunning = false, isBreak = false, totalSeconds = secs, remainingSeconds = secs)
         }
     }
 
-    suspend fun exportVocabJsonPayload(): String = syncManager.exportJson()
-
-    fun importVocabJsonPayload(json: String) {
+    fun cyclePomodoroDuration() {
+        val presets = listOf(15, 25, 45, 60)
+        val cur = _uiState.value.config.pomodoroMinutes
+        val next = presets.firstOrNull { it > cur } ?: presets.first()
         viewModelScope.launch {
-            syncManager.importJson(json)
-                .onSuccess { showToast(it.message) }
-                .onFailure { showToast(it.message ?: "JSON 备份导入失败") }
+            prefs.setPomodoroMinutes(next)
+            val secs = next * 60
+            _pomodoroFlow.update {
+                it.copy(isRunning = false, isBreak = false, totalSeconds = secs, remainingSeconds = secs)
+            }
         }
     }
 
-    fun clearStatusBanner() {
-        _statusBanner.value = null
+    fun setStandbyBrightness(fraction: Float) {
+        viewModelScope.launch { prefs.setStandbyBrightness(fraction) }
     }
 
-    fun showToast(msg: String) {
-        _statusBanner.value = msg
-        viewModelScope.launch {
-            delay(3200L)
-            if (_statusBanner.value == msg) _statusBanner.value = null
-        }
+    // ==================== Utilities ====================
+
+    fun showToast(message: String) {
+        _uiState.update { it.copy(toastMessage = message) }
     }
 
-    private fun normalizeHHmm(raw: String): String {
-        val parts = raw.trim().replace("：", ":").split(":")
-        val hh = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 8
-        val mm = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0
-        return "%02d:%02d".format(hh, mm)
+    fun consumeToast() {
+        _uiState.update { it.copy(toastMessage = null) }
     }
 
-    private fun readDeviceControl(): DeviceControlState = DeviceControlState(
-        brightnessFraction = SystemTakeoverHelper.getSystemBrightnessFraction(app),
-        mediaVolumeFraction = SystemTakeoverHelper.getMediaVolumeFraction(app),
-        canWriteSystemBrightness = SystemTakeoverHelper.canWriteSystemSettings(app)
-    )
+    private fun triggerHaptic() {
+        _uiState.update { it.copy(hapticNonce = it.hapticNonce + 1) }
+    }
 
-    private fun readTelemetry(
-        previous: ClockTelemetryState,
-        includeHeavyStats: Boolean,
-        timeFmt: SimpleDateFormat,
-        secFmt: SimpleDateFormat,
-        dateFmt: SimpleDateFormat,
-        isoFmt: SimpleDateFormat
-    ): ClockTelemetryState {
-        val now = Date()
+    companion object {
+        private val WEEKDAYS_ZH = arrayOf("周日", "周一", "周二", "周三", "周四", "周五", "周六")
 
-        if (!includeHeavyStats) {
-            return previous.copy(
-                timeHHmm = timeFmt.format(now),
-                secondsStr = secFmt.format(now),
-                dateLabel = dateFmt.format(now),
-                isoDate = isoFmt.format(now)
+        fun buildClockSnapshot(nowMs: Long = System.currentTimeMillis()): ClockSnapshot {
+            val cal = Calendar.getInstance().apply { timeInMillis = nowMs }
+            val h = cal.get(Calendar.HOUR_OF_DAY).toString().padStart(2, '0')
+            val m = cal.get(Calendar.MINUTE).toString().padStart(2, '0')
+            val s = cal.get(Calendar.SECOND).toString().padStart(2, '0')
+            val month = cal.get(Calendar.MONTH) + 1
+            val day = cal.get(Calendar.DAY_OF_MONTH)
+            val dow = WEEKDAYS_ZH[(cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)]
+            return ClockSnapshot(
+                hour = h,
+                minute = m,
+                second = s,
+                dateLine = "${month}月${day}日 $dow",
+                epochMillis = nowMs
             )
         }
-
-        val batteryIntent = try {
-            app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        } catch (_: Exception) {
-            null
-        }
-        val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
-        val batteryPct = if (level >= 0 && scale > 0) (level * 100 / scale).coerceIn(0, 100) else previous.batteryPercent
-        val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-
-        val wifiConnected = try {
-            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            if (cm == null) false
-            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            } else {
-                @Suppress("DEPRECATION")
-                val info = cm.activeNetworkInfo
-                @Suppress("DEPRECATION")
-                info != null && info.isConnected && info.type == ConnectivityManager.TYPE_WIFI
-            }
-        } catch (_: Exception) {
-            false
-        }
-
-        val am = app.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        val memInfo = ActivityManager.MemoryInfo()
-        am?.getMemoryInfo(memInfo)
-        val availMb = (memInfo.availMem / (1024L * 1024L)).toInt().coerceAtLeast(1)
-        val totalMb = (memInfo.totalMem / (1024L * 1024L)).toInt().coerceAtLeast(availMb)
-
-        return ClockTelemetryState(
-            timeHHmm = timeFmt.format(now),
-            secondsStr = secFmt.format(now),
-            dateLabel = dateFmt.format(now),
-            isoDate = isoFmt.format(now),
-            batteryPercent = batteryPct,
-            isCharging = charging,
-            isWifiConnected = wifiConnected,
-            availRamMb = availMb,
-            totalRamMb = totalMb
-        )
     }
 }

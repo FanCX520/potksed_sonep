@@ -1,46 +1,29 @@
 package com.example.ui.desktop
 
-import android.graphics.BitmapFactory
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.BatteryChargingFull
-import androidx.compose.material.icons.rounded.BatteryStd
-import androidx.compose.material.icons.rounded.Bedtime
-import androidx.compose.material.icons.rounded.DarkMode
-import androidx.compose.material.icons.rounded.LightMode
-import androidx.compose.material.icons.rounded.School
-import androidx.compose.material.icons.rounded.Science
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -48,593 +31,286 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.R
-import com.example.data.local.CustomWidgetEntity
-import com.example.data.local.TodoItemEntity
-import com.example.data.prefs.PenConfig
-import com.example.data.remote.WeatherCityOption
-import com.example.system.NativeWidgetHostManager
-import com.example.system.PenDynamicWallpaperBackdrop
-import com.example.system.WhiteNoiseType
-import com.example.ui.DesktopOverlay
+import com.example.ui.FocusSubMode
+import com.example.ui.LocalClockFlow
 import com.example.ui.PenOsUiState
-import com.example.ui.theme.LocalPenMotionTier
-import com.example.ui.theme.PenMotion
-import com.example.ui.theme.PenMotionTier
+import com.example.ui.components.StaticWallpaperBackground
+import com.example.ui.theme.ClockDisplayFont
+import com.example.ui.theme.PenIcons
 import com.example.ui.theme.PenTheme
-import com.example.ui.theme.springPressScale
-import com.example.widgets.AdaptiveWidgetCard
-import com.example.widgets.CustomDslWidgetCard
-import com.example.widgets.LocalClockTickFlow
-import com.example.widgets.NativeSystemWidgetCard
-import com.example.widgets.WidgetActionBridge
-import com.example.widgets.WidgetRegistry
-import java.io.File
-import kotlin.math.abs
 
+/**
+ * PenOS 6.0 Minimalist Giant Clock Home Screen + Bottom Quick-Action Dock.
+ *
+ * Performance engineering:
+ * - Zero horizontal widget decks, zero AndroidView, zero shadows/blurs, zero BoxWithConstraints.
+ * - Clock ticks live in an isolated leaf composable (`GiantClockLeaf`) subscribed to `LocalClockFlow`,
+ *   so wallpaper, top status bar, and bottom dock experience 0 recompositions per second.
+ * - Adapts seamlessly between 640x172 landscape dictionary pens and portrait/landscape phones.
+ */
 @Composable
 fun DesktopScreen(
     state: PenOsUiState,
-    nativeWidgetHost: NativeWidgetHostManager,
     onClockTap: () -> Unit,
     onClockLongPress: () -> Unit,
-    onToggleQuickTheme: () -> Unit,
+    onToggleDarkTheme: () -> Unit,
     onLaunchScanApp: () -> Unit,
-    onLaunchApp: (String) -> Unit,
-    onTogglePinApp: (String) -> Unit,
-    onRefreshPoem: () -> Unit,
-    onOpenOverlay: (DesktopOverlay) -> Unit,
-    onCloseOverlay: () -> Unit,
-    onRefreshWeather: () -> Unit,
-    onSearchWeatherCities: (String) -> Unit,
-    onSelectWeatherCity: (WeatherCityOption) -> Unit,
-    onRemoveSavedCity: (String) -> Unit,
-    onSaveWeatherKeys: (String, String) -> Unit,
-    onAddCalendarEvent: (String, String, String) -> Unit,
-    onDeleteCalendarEvent: (Long) -> Unit,
-    onAddTodo: (String) -> Unit,
-    onAddTodoForDate: (String, String) -> Unit,
-    onToggleTodoDone: (TodoItemEntity) -> Unit,
-    onDeleteTodo: (Long) -> Unit,
-    onClearCompletedTodos: () -> Unit,
+    onOpenAi: () -> Unit,
     onOpenVocab: () -> Unit,
-    onEnterStandBy: () -> Unit,
-    onOpenAppleTvDrawer: () -> Unit,
-    onOpenPomodoro: () -> Unit,
-    onOpenMail: () -> Unit,
-    onCycleClockStyle: () -> Unit,
-    onOpenLab: () -> Unit,
-    onToggleLanServer: () -> Unit,
-    onSetMotionTier: (String) -> Unit,
-    onToggleCustomChecklist: (CustomWidgetEntity, Int, Int) -> Unit,
-    onCustomWidgetAction: (String, String) -> Unit,
-    onBrightnessChange: (Float) -> Unit,
-    onVolumeChange: (Float) -> Unit,
-    onNightDimChange: (Float) -> Unit,
-    onToggleWhiteNoise: (WhiteNoiseType) -> Unit,
-    onSetDeckMode: (String) -> Unit,
-    onRequestAddNativeWidget: () -> Unit,
-    onAdjustNativeWidgetWidth: (Int, Int) -> Unit,
-    onRemoveNativeWidget: (Int) -> Unit,
-    onGestureHaptic: () -> Unit = {},
-    onMutateCustomDsl: (CustomWidgetEntity, String) -> Unit = { _, _ -> },
-    onRunWidgetMacro: (List<String>) -> Unit = {},
-    onRefreshHttpBlock: (CustomWidgetEntity, Int, String, String) -> Unit = { _, _, _, _ -> },
-    onRollbackLatestSnapshot: () -> Unit = {},
-    onRestoreDegradedWallpaper: () -> Unit = {},
-    onToggleDesktopEngine: () -> Unit = {},
-    modifier: Modifier = Modifier
+    onOpenFocus: (FocusSubMode) -> Unit,
+    onOpenAllApps: () -> Unit
 ) {
-    val enabledPlugins = remember(state.config.enabledWidgetIds) {
-        WidgetRegistry.resolveEnabled(state.config.enabledWidgetIds)
-    }
+    val palette = PenTheme.palette
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
+    val isUltraCompactStrip = screenHeightDp in 1..280
 
-    val desktopCustomWidgets = remember(state.customWidgets) {
-        state.customWidgets.filter {
-            it.placement == CustomWidgetEntity.PLACEMENT_DESKTOP || it.placement == CustomWidgetEntity.PLACEMENT_BOTH
-        }
-    }
+    Box(modifier = Modifier.fillMaxSize()) {
+        StaticWallpaperBackground(config = state.config)
 
-    val widgetActions = remember(
-        onLaunchScanApp,
-        onLaunchApp,
-        onRefreshPoem,
-        onOpenOverlay,
-        onOpenVocab,
-        onEnterStandBy,
-        onOpenPomodoro,
-        onOpenMail,
-        onCycleClockStyle,
-        onOpenLab,
-        onRefreshWeather,
-        onToggleTodoDone
-    ) {
-        WidgetActionBridge(
-            onLaunchScanApp = onLaunchScanApp,
-            onLaunchApp = onLaunchApp,
-            onOpenAllApps = { onOpenOverlay(DesktopOverlay.ALL_APPS) },
-            onRefreshPoem = onRefreshPoem,
-            onOpenPoemDetail = { onOpenOverlay(DesktopOverlay.POEM) },
-            onOpenVocabStudy = onOpenVocab,
-            onEnterStandBy = onEnterStandBy,
-            onOpenPomodoro = onOpenPomodoro,
-            onOpenMail = onOpenMail,
-            onCycleClockStyle = onCycleClockStyle,
-            onOpenLab = onOpenLab,
-            onOpenControlCenter = { onOpenOverlay(DesktopOverlay.CONTROL_CENTER) },
-            onOpenWeather = { onOpenOverlay(DesktopOverlay.WEATHER) },
-            onRefreshWeather = onRefreshWeather,
-            onOpenCalendar = { onOpenOverlay(DesktopOverlay.CALENDAR) },
-            onOpenTodo = { onOpenOverlay(DesktopOverlay.TODO) },
-            onToggleTodoDone = onToggleTodoDone
-        )
-    }
-
-    val isLight = PenTheme.colors.isAppleLight
-    val motionTier = LocalPenMotionTier.current
-    val isNativeOnly = state.config.desktopDeckMode == PenConfig.DECK_MODE_NATIVE_ONLY
-    val isNativeTurboEngine = state.config.desktopEngineMode == PenConfig.ENGINE_NATIVE_TURBO
-    val swipeThresholdPx = with(LocalDensity.current) { state.config.swipeSensitivityDp.dp.toPx() }
-
-    Box(modifier = modifier.fillMaxSize()) {
-        if (isNativeTurboEngine) {
-            // Engine A (MT6582 Default): Pure Native Android View Desktop (0 Compose scroll overhead, 1.0x overdraw)
-            NativeTurboDesktopView(
-                state = state,
-                nativeWidgetHost = nativeWidgetHost,
-                onClockTap = onClockTap,
-                onClockLongPress = onClockLongPress,
-                onToggleQuickTheme = onToggleQuickTheme,
-                onLaunchScanApp = onLaunchScanApp,
-                onLaunchApp = onLaunchApp,
-                onOpenOverlay = onOpenOverlay,
-                onOpenVocab = onOpenVocab,
-                onEnterStandBy = onEnterStandBy,
-                onOpenAppleTvDrawer = onOpenAppleTvDrawer,
-                onOpenMail = onOpenMail,
-                onCycleClockStyle = onCycleClockStyle,
-                onOpenLab = onOpenLab,
-                onSetDeckMode = onSetDeckMode,
-                onRequestAddNativeWidget = onRequestAddNativeWidget,
-                onGestureHaptic = onGestureHaptic,
-                modifier = Modifier.fillMaxSize()
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .safeDrawingPadding()
+                .padding(
+                    horizontal = if (isUltraCompactStrip) 14.dp else 20.dp,
+                    vertical = if (isUltraCompactStrip) 6.dp else 14.dp
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // 1. Minimalist Top Telemetry Strip
+            HomeTopTelemetryStrip(
+                wifiConnected = state.wifiConnected,
+                batteryPercent = state.batteryPercent,
+                isCharging = state.isCharging,
+                isDark = state.config.isDarkTheme,
+                onToggleTheme = onToggleDarkTheme,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 560.dp)
             )
-        } else {
-            // Engine B: Deep-Optimized Full Compose Desktop with non-blocking direction-locked vertical swipe
+
+            // 2. Centered Architectural Giant Clock Stage (5-tap + Long Press -> Hidden Vault)
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(state.activeOverlay, swipeThresholdPx) {
-                        if (state.activeOverlay == DesktopOverlay.NONE) {
-                            awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                var totalDx = 0f
-                                var totalDy = 0f
-                                var prevPos = down.position
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                    if (!change.pressed) break
-                                    totalDx += change.position.x - prevPos.x
-                                    totalDy += change.position.y - prevPos.y
-                                    prevPos = change.position
-                                }
-                                if (abs(totalDy) >= swipeThresholdPx && abs(totalDy) > abs(totalDx) * 1.35f) {
-                                    if (totalDy < 0f) {
-                                        onGestureHaptic()
-                                        onOpenAppleTvDrawer()
-                                    } else {
-                                        onGestureHaptic()
-                                        onOpenOverlay(DesktopOverlay.CONTROL_CENTER)
-                                    }
-                                }
-                            }
-                        }
-                    }
-            ) {
-                // 1. 4-Mode Dynamic / Independent Theme Wallpaper Backdrop
-                PenDynamicWallpaperBackdrop(
-                    config = state.config,
-                    isAppleLight = isLight,
-                    forFullScreenClock = false
-                )
-
-                // 2. Main Split Layout: Left CarPlay Dock + Right Hybrid Widget Deck
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-            CarPlayLeftDock(
-                state = state,
-                isNativeOnly = isNativeOnly,
-                onClockTap = onClockTap,
-                onClockLongPress = onClockLongPress,
-                onToggleQuickTheme = onToggleQuickTheme,
-                onOpenVocab = onOpenVocab,
-                onOpenLab = onOpenLab,
-                onOpenControlCenter = { onOpenOverlay(DesktopOverlay.CONTROL_CENTER) },
-                onEnterStandBy = onEnterStandBy,
-                onToggleDeckMode = {
-                    onSetDeckMode(if (isNativeOnly) PenConfig.DECK_MODE_MIXED else PenConfig.DECK_MODE_NATIVE_ONLY)
-                }
-            )
-
-            LazyRow(
-                modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
-                    .testTag("desktop_widget_deck"),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(end = 6.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 560.dp),
+                contentAlignment = Alignment.Center
             ) {
-                if (!isNativeOnly) {
-                    items(enabledPlugins, key = { "plugin_${it.id}" }) { plugin ->
-                        plugin.Render(
-                            state = state,
-                            actions = widgetActions,
-                            modifier = Modifier.width(plugin.preferredWidth)
-                        )
-                    }
+                GiantClockStage(
+                    showSeconds = state.config.showSecondsOnHome,
+                    isUltraCompactStrip = isUltraCompactStrip,
+                    secretTapCount = state.secretTapCount,
+                    stockHomeBypassSec = state.stockHomeBypassSec,
+                    vocabToday = state.vocab.todayReviewed,
+                    vocabGoal = state.config.vocabDailyGoal,
+                    onClockTap = onClockTap,
+                    onClockLongPress = onClockLongPress,
+                    onOpenVocab = onOpenVocab
+                )
+            }
 
-                    // Declarative MCP-authored Custom Widgets placed on Desktop!
-                    items(desktopCustomWidgets, key = { "custom_dsl_${it.id}" }) { cw ->
-                        CustomDslWidgetCard(
-                            widget = cw,
-                            onToggleChecklist = { _, bIdx, iIdx -> onToggleCustomChecklist(cw, bIdx, iIdx) },
-                            onInvokeAction = onCustomWidgetAction,
-                            onMutateDsl = onMutateCustomDsl,
-                            onRunMacro = onRunWidgetMacro,
-                            onRefreshHttpBlock = onRefreshHttpBlock,
-                            modifier = Modifier
-                                .width(cw.widthDp.dp)
-                                .fillMaxHeight()
-                        )
-                    }
-                }
-
-                // 1+2 Native Android AppWidgets
-                items(state.config.nativeWidgetIds, key = { "native_$it" }) { widgetId ->
-                    val widthDp = state.config.nativeWidgetWidths[widgetId] ?: 200
-                    NativeSystemWidgetCard(
-                        appWidgetId = widgetId,
-                        widthDp = widthDp,
-                        hostManager = nativeWidgetHost,
-                        showManageBar = isNativeOnly,
-                        onAdjustWidth = { delta -> onAdjustNativeWidgetWidth(widgetId, delta) },
-                        onRemove = { onRemoveNativeWidget(widgetId) }
-                    )
-                }
-
-                if (isNativeOnly) {
-                    item(key = "add_native_widget_card") {
-                        AdaptiveWidgetCard(
-                            modifier = Modifier
-                                .width(172.dp)
-                                .testTag("add_native_widget_card"),
-                            onClick = onRequestAddNativeWidget
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.Center,
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = "添加系统原生小组件",
-                                    tint = PenTheme.colors.primaryAction,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("添加系统原生小组件", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-                                Text("调用安卓 AppWidgetHost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-            }
-            }
-        }
-
-        // 3. Hardware-Tuned Strip Overlays (shared by BOTH Native Turbo & Full Compose engines!)
-        val renderActiveOverlay: @Composable () -> Unit = {
-            when (state.activeOverlay) {
-                DesktopOverlay.POEM -> PoemDetailOverlay(
-                    state = state,
-                    onRefresh = onRefreshPoem,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.WEATHER -> WeatherDetailOverlay(
-                    state = state,
-                    onSearchCity = onSearchWeatherCities,
-                    onSelectCity = onSelectWeatherCity,
-                    onRemoveSavedCity = onRemoveSavedCity,
-                    onSaveWeatherKeys = onSaveWeatherKeys,
-                    onRefreshWeather = onRefreshWeather,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.CALENDAR -> CalendarDetailOverlay(
-                    state = state,
-                    onAddCalendarEvent = onAddCalendarEvent,
-                    onDeleteCalendarEvent = onDeleteCalendarEvent,
-                    onToggleTodoDone = onToggleTodoDone,
-                    onAddTodoForDate = onAddTodoForDate,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.TODO -> TodoManagerOverlay(
-                    state = state,
-                    onAddTodo = onAddTodo,
-                    onToggleTodoDone = onToggleTodoDone,
-                    onDeleteTodo = onDeleteTodo,
-                    onClearCompleted = onClearCompletedTodos,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.CONTROL_CENTER -> ControlCenterOverlay(
-                    state = state,
-                    onBrightnessChange = onBrightnessChange,
-                    onVolumeChange = onVolumeChange,
-                    onNightDimChange = onNightDimChange,
-                    onToggleWhiteNoise = onToggleWhiteNoise,
-                    onToggleTheme = onToggleQuickTheme,
-                    onOpenAppleTvDrawer = {
-                        onCloseOverlay()
-                        onOpenAppleTvDrawer()
-                    },
-                    onOpenPomodoro = onOpenPomodoro,
-                    onOpenMail = {
-                        onCloseOverlay()
-                        onOpenMail()
-                    },
-                    onOpenLab = onOpenLab,
-                    onToggleLanServer = onToggleLanServer,
-                    onSetMotionTier = onSetMotionTier,
-                    onRequestAddNativeWidget = onRequestAddNativeWidget,
-                    onRollbackLatestSnapshot = onRollbackLatestSnapshot,
-                    onRestoreDegradedWallpaper = onRestoreDegradedWallpaper,
-                    onToggleDesktopEngine = onToggleDesktopEngine,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.ALL_APPS -> AllAppsOverlay(
-                    state = state,
-                    onLaunchApp = {
-                        onCloseOverlay()
-                        onLaunchApp(it)
-                    },
-                    onTogglePinApp = onTogglePinApp,
-                    onDismiss = onCloseOverlay
-                )
-                DesktopOverlay.NONE -> Unit
-            }
-        }
-
-        if (motionTier == PenMotionTier.NONE) {
-            if (state.activeOverlay != DesktopOverlay.NONE) {
-                renderActiveOverlay()
-            }
-        } else {
-            AnimatedVisibility(
-                visible = state.activeOverlay != DesktopOverlay.NONE,
-                enter = PenMotion.overlayEnter(tier = motionTier),
-                exit = PenMotion.overlayExit(tier = motionTier)
-            ) {
-                renderActiveOverlay()
-            }
+            // 3. Bottom Quick-Action Dock (5 Tactile Monochrome Entries)
+            HomeBottomDock(
+                isUltraCompactStrip = isUltraCompactStrip,
+                onLaunchScanApp = onLaunchScanApp,
+                onOpenAi = onOpenAi,
+                onOpenVocab = onOpenVocab,
+                onOpenFocus = { onOpenFocus(FocusSubMode.STANDBY) },
+                onOpenAllApps = onOpenAllApps,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+            )
         }
     }
 }
 
 @Composable
-fun SharedThemeWallpaperBackdrop(
-    isAppleLight: Boolean,
-    presetId: String,
-    customPath: String,
-    forFullScreenClock: Boolean = false
+private fun HomeTopTelemetryStrip(
+    wifiConnected: Boolean,
+    batteryPercent: Int,
+    isCharging: Boolean,
+    isDark: Boolean,
+    onToggleTheme: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val customBitmap = if (presetId == PenConfig.WALLPAPER_CUSTOM && customPath.isNotBlank()) {
-        com.example.system.rememberSampledBitmap(customPath, maxWidthPx = 720, maxHeightPx = 320)
-    } else null
+    val palette = PenTheme.palette
+    val clock by LocalClockFlow.current.collectAsStateWithLifecycle()
 
-    if (isAppleLight) {
-        Box(modifier = Modifier.fillMaxSize().background(PenTheme.colors.canvasBackground)) {
-            when {
-                presetId == PenConfig.WALLPAPER_CUSTOM && customBitmap != null -> {
-                    Image(bitmap = customBitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    if (!forFullScreenClock) Box(modifier = Modifier.fillMaxSize().background(Color(0xAAF3F6F6)))
-                }
-                presetId == PenConfig.WALLPAPER_GALLERY_LIGHT -> {
-                    Image(painter = painterResource(id = R.drawable.img_wallpaper_gallery_light), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    if (!forFullScreenClock) Box(modifier = Modifier.fillMaxSize().background(Color(0x99F3F6F6)))
-                }
-                presetId == PenConfig.WALLPAPER_WARM_PAPER -> {
-                    Box(modifier = Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFFFBF8F3), Color(0xFFF3ECE1), Color(0xFFEBE4D8)))))
-                }
-                else -> {
-                    Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0xFFF3F6F6), Color(0xFFEAF0F5), Color(0xFFF5F6F8)))))
-                }
-            }
-        }
-        return
-    }
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = clock.dateLine,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.8.sp
+            ),
+            color = palette.inkMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("home_date_label")
+        )
 
-    Box(modifier = Modifier.fillMaxSize().background(PenTheme.colors.obsidian)) {
-        when {
-            presetId == PenConfig.WALLPAPER_CUSTOM && customBitmap != null -> {
-                Image(bitmap = customBitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Wi-Fi precision status dot
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (wifiConnected) palette.success else palette.hairline)
+                )
+                Text(
+                    text = if (wifiConnected) "WI-FI" else "离线",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkMuted
+                )
             }
-            presetId == PenConfig.WALLPAPER_AURORA -> {
-                Image(painter = painterResource(id = R.drawable.img_wallpaper_aurora), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+
+            // Battery readout
+            Text(
+                text = if (isCharging) "⚡$batteryPercent%" else "$batteryPercent%",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFeatureSettings = "tnum",
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = if (batteryPercent <= 15) palette.danger else palette.ink,
+                modifier = Modifier.testTag("home_battery_label")
+            )
+
+            // Instant 1-tap Black / White Theme Switch
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(palette.surface)
+                    .border(1.dp, palette.hairline, CircleShape)
+                    .clickable(onClick = onToggleTheme)
+                    .testTag("home_theme_toggle")
+                    .semantics {
+                        contentDescription = if (isDark) "切换为极简白主题" else "切换为极简黑主题"
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = PenIcons.ThemeContrast,
+                    contentDescription = null,
+                    tint = palette.ink,
+                    modifier = Modifier.size(18.dp)
+                )
             }
-            presetId == PenConfig.WALLPAPER_INK -> {
-                Image(painter = painterResource(id = R.drawable.img_wallpaper_ink), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            }
-            else -> {
-                Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0xFF07090D), Color(0xFF101521), Color(0xFF07090D)))))
-            }
-        }
-        if (!forFullScreenClock) {
-            Box(modifier = Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0x9905070B), Color(0x55080B12), Color(0x7705070B)))))
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CarPlayLeftDock(
-    state: PenOsUiState,
-    isNativeOnly: Boolean,
+private fun GiantClockStage(
+    showSeconds: Boolean,
+    isUltraCompactStrip: Boolean,
+    secretTapCount: Int,
+    stockHomeBypassSec: Int,
+    vocabToday: Int,
+    vocabGoal: Int,
     onClockTap: () -> Unit,
     onClockLongPress: () -> Unit,
-    onToggleQuickTheme: () -> Unit,
-    onOpenVocab: () -> Unit,
-    onOpenLab: () -> Unit,
-    onOpenControlCenter: () -> Unit,
-    onEnterStandBy: () -> Unit,
-    onToggleDeckMode: () -> Unit
+    onOpenVocab: () -> Unit
 ) {
-    val colors = PenTheme.colors
-    val isLight = colors.isAppleLight
-    val isArmed = state.secretTrigger.isArmed
-    val dockShape = RoundedCornerShape(colors.cardCornerRadius)
-    // Decoupled 1s tick read ONLY inside dock leaf!
-    val liveClock by LocalClockTickFlow.current.collectAsStateWithLifecycle()
+    val palette = PenTheme.palette
+    val interactionSource = remember { MutableInteractionSource() }
 
-    Surface(
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
         modifier = Modifier
-            .width(70.dp)
-            .fillMaxHeight()
-            .testTag("carplay_left_dock"),
-        shape = dockShape,
-        color = colors.glassCardElevated,
-        border = when {
-            isArmed -> BorderStroke(1.5.dp, colors.primaryAction)
-            colors.showCardBorder -> BorderStroke(1.dp, colors.glassBorder)
-            else -> null
-        }
+            .clip(RoundedCornerShape(16.dp))
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClockTap,
+                onLongClick = onClockLongPress
+            )
+            .testTag("home_clock_stage")
+            .padding(horizontal = 16.dp, vertical = if (isUltraCompactStrip) 2.dp else 12.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(vertical = 6.dp, horizontal = 5.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
+        GiantClockNumeralsLeaf(
+            showSeconds = showSeconds,
+            isUltraCompactStrip = isUltraCompactStrip
+        )
+
+        if (!isUltraCompactStrip) {
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // Minimalist status pill or active 60s bypass alert
+        if (stockHomeBypassSec > 0) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .combinedClickable(
-                        onClick = onClockTap,
-                        onLongClick = onClockLongPress
-                    )
-                    .padding(vertical = 2.dp)
-                    .testTag("desktop_clock_trigger")
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(palette.accent)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = liveClock.timeHHmm,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = PenTheme.clockFont,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold
-                    ),
-                    color = if (isArmed) colors.primaryAction else MaterialTheme.colorScheme.onSurface
+                    text = "原厂桌面临时放行 ${stockHomeBypassSec}s",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.onAccent
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = if (liveClock.isCharging) Icons.Rounded.BatteryChargingFull else Icons.Rounded.BatteryStd,
-                        contentDescription = "电量",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurfaceVariant else {
-                            if (liveClock.batteryPercent > 20) colors.vocabEmerald else colors.dangerRose
-                        },
-                        modifier = Modifier.size(10.dp)
-                    )
-                    Text(
-                        text = "${liveClock.batteryPercent}%",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (isArmed) {
-                    Spacer(modifier = Modifier.height(1.dp))
-                    Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(colors.primaryAction))
-                }
             }
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+        } else if (!isUltraCompactStrip) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(palette.surface)
+                    .border(1.dp, palette.hairline, RoundedCornerShape(99.dp))
+                    .clickable(onClick = onOpenVocab)
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DockCircleButton(
-                        icon = Icons.Rounded.School,
-                        desc = "百词斩背单词",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.vocabEmerald,
-                        bg = if (isLight) colors.chipSurface else colors.vocabEmerald.copy(alpha = 0.18f),
-                        tag = "dock_vocab_button",
-                        onClick = onOpenVocab
-                    )
-                    DockCircleButton(
-                        icon = Icons.Rounded.Science,
-                        desc = "AI 与实验室",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.glacierBlue,
-                        bg = if (isLight) colors.chipSurface else colors.glacierBlue.copy(alpha = 0.18f),
-                        tag = "dock_lab_button",
-                        onClick = onOpenLab
-                    )
-                }
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(palette.accent)
+                )
+                Text(
+                    text = "今日背词 $vocabToday / $vocabGoal",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                    color = palette.inkMuted
+                )
+            }
+        }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DockCircleButton(
-                        icon = Icons.Rounded.Tune,
-                        desc = "控制中心",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.standByCoral,
-                        bg = if (isLight) colors.chipSurface else colors.standByCoral.copy(alpha = 0.18f),
-                        tag = "dock_control_button",
-                        onClick = onOpenControlCenter
-                    )
-                    DockCircleButton(
-                        icon = Icons.Rounded.Widgets,
-                        desc = "切换原生组件视图",
-                        tint = if (isNativeOnly) Color.White else if (isLight) MaterialTheme.colorScheme.onSurface else colors.poetryGold,
-                        bg = if (isNativeOnly) colors.primaryAction else if (isLight) colors.chipSurface else colors.poetryGold.copy(alpha = 0.18f),
-                        tag = "dock_native_tab_button",
-                        onClick = onToggleDeckMode
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DockCircleButton(
-                        icon = Icons.Rounded.Bedtime,
-                        desc = "StandBy 息屏待机",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.standByAmber,
-                        bg = if (isLight) colors.chipSurface else colors.standByAmber.copy(alpha = 0.18f),
-                        tag = "dock_standby_button",
-                        onClick = onEnterStandBy
-                    )
-                    DockCircleButton(
-                        icon = if (isLight) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-                        desc = "切换主题方案",
-                        tint = if (isLight) MaterialTheme.colorScheme.onSurface else colors.glacierBlue,
-                        bg = if (isLight) colors.chipSurface else colors.glacierBlue.copy(alpha = 0.18f),
-                        tag = "dock_theme_toggle_button",
-                        onClick = onToggleQuickTheme
+        // Subtle secret 5-tap indicator (only visible while tapping towards Vault)
+        if (secretTapCount > 0) {
+            Spacer(modifier = Modifier.height(if (isUltraCompactStrip) 2.dp else 8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                repeat(5) { idx ->
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .background(if (idx < secretTapCount) palette.accent else palette.hairline)
                     )
                 }
             }
@@ -642,26 +318,183 @@ private fun CarPlayLeftDock(
     }
 }
 
+/**
+ * Isolated 1-second leaf composable. Only this tiny Text row recomposes when clock ticks!
+ */
 @Composable
-private fun DockCircleButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    desc: String,
-    tint: Color,
-    bg: Color,
-    tag: String,
-    onClick: () -> Unit
+private fun GiantClockNumeralsLeaf(
+    showSeconds: Boolean,
+    isUltraCompactStrip: Boolean
 ) {
-    Surface(
-        modifier = Modifier
-            .size(25.dp)
-            .springPressScale(pressedScale = 0.88f, onClick = onClick)
-            .clip(CircleShape)
-            .testTag(tag),
-        shape = CircleShape,
-        color = bg
+    val palette = PenTheme.palette
+    val clock by LocalClockFlow.current.collectAsStateWithLifecycle()
+    val fontSize = if (isUltraCompactStrip) 54.sp else 84.sp
+    val lineHeight = if (isUltraCompactStrip) 56.sp else 88.sp
+
+    Row(
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.Center
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(imageVector = icon, contentDescription = desc, tint = tint, modifier = Modifier.size(13.dp))
+        Text(
+            text = clock.hour,
+            fontFamily = ClockDisplayFont,
+            fontWeight = FontWeight.Light,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            letterSpacing = (-2.5).sp,
+            style = MaterialTheme.typography.displayLarge.copy(fontFeatureSettings = "tnum"),
+            color = palette.ink
+        )
+        Text(
+            text = ":",
+            fontFamily = ClockDisplayFont,
+            fontWeight = FontWeight.Normal,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            color = palette.accent,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
+        Text(
+            text = clock.minute,
+            fontFamily = ClockDisplayFont,
+            fontWeight = FontWeight.Light,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            letterSpacing = (-2.5).sp,
+            style = MaterialTheme.typography.displayLarge.copy(fontFeatureSettings = "tnum"),
+            color = palette.ink
+        )
+        if (showSeconds) {
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = clock.second,
+                fontFamily = ClockDisplayFont,
+                fontWeight = FontWeight.Normal,
+                fontSize = if (isUltraCompactStrip) 20.sp else 26.sp,
+                style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                color = palette.inkMuted,
+                modifier = Modifier.padding(bottom = if (isUltraCompactStrip) 8.dp else 12.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeBottomDock(
+    isUltraCompactStrip: Boolean,
+    onLaunchScanApp: () -> Unit,
+    onOpenAi: () -> Unit,
+    onOpenVocab: () -> Unit,
+    onOpenFocus: () -> Unit,
+    onOpenAllApps: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = PenTheme.palette
+    val dockShape = RoundedCornerShape(18.dp)
+
+    Row(
+        modifier = modifier
+            .clip(dockShape)
+            .background(palette.surface)
+            .border(1.dp, palette.hairline, dockShape)
+            .padding(
+                horizontal = if (isUltraCompactStrip) 6.dp else 8.dp,
+                vertical = if (isUltraCompactStrip) 4.dp else 6.dp
+            ),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        DockActionButton(
+            icon = PenIcons.Scan,
+            label = "扫学",
+            emphasized = false,
+            compact = isUltraCompactStrip,
+            testTag = "dock_scan",
+            onClick = onLaunchScanApp,
+            modifier = Modifier.weight(1f)
+        )
+        DockActionButton(
+            icon = PenIcons.VocabBook,
+            label = "背词",
+            emphasized = false,
+            compact = isUltraCompactStrip,
+            testTag = "dock_vocab",
+            onClick = onOpenVocab,
+            modifier = Modifier.weight(1f)
+        )
+        DockActionButton(
+            icon = PenIcons.SparkleAi,
+            label = "AI",
+            emphasized = true,
+            compact = isUltraCompactStrip,
+            testTag = "dock_ai",
+            onClick = onOpenAi,
+            modifier = Modifier.weight(1.15f)
+        )
+        DockActionButton(
+            icon = PenIcons.FocusTimer,
+            label = "专注",
+            emphasized = false,
+            compact = isUltraCompactStrip,
+            testTag = "dock_focus",
+            onClick = onOpenFocus,
+            modifier = Modifier.weight(1f)
+        )
+        DockActionButton(
+            icon = PenIcons.AppsGrid,
+            label = "应用",
+            emphasized = false,
+            compact = isUltraCompactStrip,
+            testTag = "dock_apps",
+            onClick = onOpenAllApps,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun DockActionButton(
+    icon: ImageVector,
+    label: String,
+    emphasized: Boolean,
+    compact: Boolean,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = PenTheme.palette
+    val shape = RoundedCornerShape(12.dp)
+    val bg = if (emphasized) palette.invertedBg else palette.surface
+    val fg = if (emphasized) palette.invertedInk else palette.ink
+    val labelColor = if (emphasized) palette.invertedInk else palette.inkMuted
+
+    Column(
+        modifier = modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .clip(shape)
+            .background(bg)
+            .clickable(onClick = onClick)
+            .testTag(testTag)
+            .padding(vertical = if (compact) 4.dp else 7.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = fg,
+            modifier = Modifier.size(if (compact) 18.dp else 20.dp)
+        )
+        if (!compact) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (emphasized) FontWeight.SemiBold else FontWeight.Medium
+                ),
+                color = labelColor,
+                maxLines = 1
+            )
         }
     }
 }

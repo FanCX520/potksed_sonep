@@ -1,40 +1,56 @@
 package com.example.ui.theme
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 
-// === Theme 1: Dark StandBy + CarPlay Palette ===
-val PureBlack = Color(0xFF000000)
-val ObsidianBase = Color(0xFF0B0E14)
-val SlateSurface = Color(0xFF141923)
-val SlateCard = Color(0xD4161C27)
-val SlateCardElevated = Color(0xE61E2636)
-val GlassBorder = Color(0x22FFFFFF)
-val GlassBorderBright = Color(0x40FFFFFF)
+@Immutable
+data class PenMonoPalette(
+    val isDark: Boolean,
+    val canvas: Color,
+    val surface: Color,
+    val surfaceAlt: Color,
+    val hairline: Color,
+    val ink: Color,
+    val inkMuted: Color,
+    val accent: Color,
+    val onAccent: Color,
+    val invertedBg: Color,
+    val invertedInk: Color,
+    val scrimOnWallpaper: Color,
+    val danger: Color,
+    val success: Color
+)
 
-val StandByCoral = Color(0xFFFF6B4A)
-val StandByAmber = Color(0xFFFFB020)
-val CarPlayGlacier = Color(0xFF38BDF8)
-val VocabEmerald = Color(0xFF34D399)
-val PoetryGold = Color(0xFFEAB308)
-val DangerRose = Color(0xFFF43F5E)
+val ObsidianDarkPalette = PenMonoPalette(
+    isDark = true,
+    canvas = Color(0xFF000000),
+    surface = Color(0xFF0E0E10),
+    surfaceAlt = Color(0xFF1A1A1E),
+    hairline = Color(0xFF28282E),
+    ink = Color(0xFFFFFFFF),
+    inkMuted = Color(0xFF9A9AA2),
+    accent = Color(0xFFFF453A),
+    onAccent = Color(0xFFFFFFFF),
+    invertedBg = Color(0xFFFFFFFF),
+    invertedInk = Color(0xFF000000),
+    scrimOnWallpaper = Color(0xAA000000),
+    danger = Color(0xFFFF453A),
+    success = Color(0xFF32D74B)
+)
 
-val TextPrimary = Color(0xFFF8FAFC)
-val TextSecondary = Color(0xFF94A3B8)
-val TextMuted = Color(0xFF64748B)
-
-// === Theme 2: Apple White Gallery Vitrine Palette (from DESIGN_4374f950.md) ===
-val ApplePureWhite = Color(0xFFFFFFFF)
-val AppleFogMist = Color(0xFFF3F6F6)
-val ApplePaperGray = Color(0xFFFAFAFC)
-val AppleSilverSmoke = Color(0xFFE8E8ED)
-val AppleAshBorder = Color(0xFFDEDFE2)
-val AppleGraphite = Color(0xFF6E6E73)
-val AppleCharcoal = Color(0xFF444545)
-val AppleSteel = Color(0xFF313131)
-val AppleNearBlack = Color(0xFF1D1D1F)
-val AppleTrueBlack = Color(0xFF000000)
-val AppleBlue = Color(0xFF0071E3)
-val AppleLinkBlue = Color(0xFF0066CC)
-val AppleEmber = Color(0xFFB64400)
-val AppleOceanStart = Color(0xFF004C94)
-val AppleOceanEnd = Color(0xFF297BC4)
+val SwissPaperLightPalette = PenMonoPalette(
+    isDark = false,
+    canvas = Color(0xFFFAFAFA),
+    surface = Color(0xFFFFFFFF),
+    surfaceAlt = Color(0xFFF0F0F3),
+    hairline = Color(0xFFDFDFE4),
+    ink = Color(0xFF0A0A0C),
+    inkMuted = Color(0xFF66666E),
+    accent = Color(0xFF0071E3),
+    onAccent = Color(0xFFFFFFFF),
+    invertedBg = Color(0xFF0A0A0C),
+    invertedInk = Color(0xFFFFFFFF),
+    scrimOnWallpaper = Color(0xB3FAFAFA),
+    danger = Color(0xFFD93025),
+    success = Color(0xFF1E8E3E)
+)
